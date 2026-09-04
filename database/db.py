@@ -10,6 +10,11 @@ Two tables are kept:
 
 The data manager writes while the GUI reads, so the database runs in WAL mode
 and every call uses its own short lived connection.
+
+The reading columns are declared once in ``READING_FIELDS`` and the INSERT is
+built from that list, so adding a sensor means adding one entry here. Databases
+created by an earlier version are upgraded in place by ``_ensure_columns``
+rather than having to be deleted.
 """
 
 import csv
@@ -20,6 +25,33 @@ from datetime import datetime, timedelta
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coldchain.db')
 
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+# (column name, SQL type) in the order they are stored and displayed.
+READING_FIELDS = [
+    ('temperature', 'REAL'),         # primary probe
+    ('temperature_b', 'REAL'),       # redundant probe
+    ('ambient', 'REAL'),             # room temperature outside the unit
+    ('humidity', 'REAL'),
+    ('door_state', 'TEXT'),
+    ('operator', 'TEXT'),            # who the door opening is attributed to
+    ('power_source', 'TEXT'),
+    ('battery_level', 'REAL'),
+    ('compressor', 'TEXT'),          # commanded state
+    ('compressor_current', 'REAL'),  # measured current draw
+    ('fan', 'TEXT'),                 # commanded state
+    ('fan_rpm', 'REAL'),             # measured speed
+    ('siren', 'TEXT'),
+    ('alert_level', 'TEXT'),
+]
+
+READING_NAMES = [name for name, _ in READING_FIELDS]
+
+EVENT_FIELDS = [
+    ('level', 'TEXT'),
+    ('code', 'TEXT'),
+    ('message', 'TEXT'),
+    ('operator', 'TEXT'),
+]
 
 
 def _connect():
@@ -32,68 +64,64 @@ def now_string():
     return datetime.now().strftime(TIME_FORMAT)
 
 
+def _ensure_columns(conn, table, fields):
+    """Add any column the table is missing, so older databases keep working."""
+    existing = {row[1] for row in conn.execute('PRAGMA table_info(%s)' % table)}
+    for name, sql_type in fields:
+        if name not in existing:
+            conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, name, sql_type))
+
+
 def init_db():
-    """Create the schema. Safe to call on every start-up."""
+    """Create or upgrade the schema. Safe to call on every start-up."""
     conn = _connect()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS readings (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts            TEXT NOT NULL,
-            temperature   REAL,
-            humidity      REAL,
-            door_state    TEXT,
-            power_source  TEXT,
-            battery_level REAL,
-            compressor    TEXT,
-            fan           TEXT,
-            siren         TEXT,
-            alert_level   TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL
         )
     ''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS events (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts      TEXT NOT NULL,
-            level   TEXT NOT NULL,
-            code    TEXT NOT NULL,
-            message TEXT NOT NULL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL
         )
     ''')
+    _ensure_columns(conn, 'readings', READING_FIELDS)
+    _ensure_columns(conn, 'events', EVENT_FIELDS)
     conn.execute('CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(ts)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)')
     conn.commit()
     conn.close()
 
 
-def insert_reading(temperature, humidity, door_state, power_source, battery_level,
-                   compressor, fan, siren, alert_level):
+def insert_reading(**values):
+    """Store one snapshot. Unknown keys are ignored, missing ones become NULL."""
+    columns = ['ts'] + READING_NAMES
+    row = [now_string()] + [values.get(name) for name in READING_NAMES]
+    placeholders = ', '.join('?' * len(columns))
     conn = _connect()
-    conn.execute('''
-        INSERT INTO readings (ts, temperature, humidity, door_state, power_source,
-                              battery_level, compressor, fan, siren, alert_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (now_string(), temperature, humidity, door_state, power_source,
-          battery_level, compressor, fan, siren, alert_level))
+    conn.execute('INSERT INTO readings (%s) VALUES (%s)'
+                 % (', '.join(columns), placeholders), row)
     conn.commit()
     conn.close()
 
 
-def insert_event(level, code, message):
+def insert_event(level, code, message, operator=None):
     conn = _connect()
-    conn.execute('INSERT INTO events (ts, level, code, message) VALUES (?, ?, ?, ?)',
-                 (now_string(), level, code, message))
+    conn.execute('INSERT INTO events (ts, level, code, message, operator) '
+                 'VALUES (?, ?, ?, ?, ?)',
+                 (now_string(), level, code, message, operator))
     conn.commit()
     conn.close()
 
 
 def recent_readings(limit=200):
-    """Newest first."""
+    """Newest first. Columns are ``ts`` followed by READING_NAMES."""
     conn = _connect()
-    rows = conn.execute('''
-        SELECT ts, temperature, humidity, door_state, power_source, battery_level,
-               compressor, fan, siren, alert_level
-        FROM readings ORDER BY id DESC LIMIT ?
-    ''', (limit,)).fetchall()
+    rows = conn.execute(
+        'SELECT ts, %s FROM readings ORDER BY id DESC LIMIT ?'
+        % ', '.join(READING_NAMES), (limit,)).fetchall()
     conn.close()
     return rows
 
@@ -102,8 +130,8 @@ def recent_events(limit=100):
     """Newest first."""
     conn = _connect()
     rows = conn.execute(
-        'SELECT ts, level, code, message FROM events ORDER BY id DESC LIMIT ?',
-        (limit,)).fetchall()
+        'SELECT ts, level, code, message, operator FROM events '
+        'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
     conn.close()
     return rows
 
@@ -136,6 +164,10 @@ def stats_since(hours=24, target_min=2.0, target_max=8.0, sample_seconds=5.0):
         "SELECT COUNT(*) FROM events WHERE ts >= ? AND level = 'WARNING'",
         (since,)).fetchone()[0]
 
+    door_events = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE ts >= ? AND code = 'DOOR_OPEN'",
+        (since,)).fetchone()[0]
+
     conn.close()
 
     count, t_min, t_max, t_avg = row
@@ -147,14 +179,14 @@ def stats_since(hours=24, target_min=2.0, target_max=8.0, sample_seconds=5.0):
         'excursion_minutes': round(outside * sample_seconds / 60.0, 1),
         'alarms': alarms,
         'warnings': warnings,
+        'door_events': door_events,
     }
 
 
 def export_readings_csv(path, limit=5000):
     """Write the newest readings to a CSV file and return how many rows were written."""
     rows = recent_readings(limit)
-    header = ['timestamp', 'temperature_c', 'humidity_pct', 'door', 'power',
-              'battery_pct', 'compressor', 'fan', 'siren', 'alert_level']
+    header = ['timestamp'] + READING_NAMES
     with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.writer(handle)
         writer.writerow(header)
@@ -165,3 +197,4 @@ def export_readings_csv(path, limit=5000):
 if __name__ == '__main__':
     init_db()
     print('database ready at', DB_FILE)
+    print('reading columns:', ', '.join(READING_NAMES))

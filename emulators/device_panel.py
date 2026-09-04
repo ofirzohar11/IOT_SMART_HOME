@@ -24,11 +24,18 @@ from PyQt5.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout,
                              QMainWindow, QVBoxLayout, QWidget)
 
 from config import mqtt_init as cfg
+from emulators.ambient_emulator import AmbientSensorPanel
+from emulators.badge_emulator import BadgeReaderPanel
+from emulators.current_emulator import CurrentSensorPanel
 from emulators.door_emulator import DoorSensorPanel
+from emulators.fan_rpm_emulator import FanRpmSensorPanel
 from emulators.power_emulator import PowerSensorPanel
 from emulators.relay_base import RelayPanel
+from emulators.temp_b_emulator import TempProbeBPanel
 from emulators.temp_emulator import TempSensorPanel
 from ui import theme as t
+
+COLUMNS = 4
 
 
 class DevicePanelWindow(QMainWindow):
@@ -36,7 +43,7 @@ class DevicePanelWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Cold Chain Monitor - Device Panel')
-        self.setMinimumSize(1160, 800)
+        self.setMinimumSize(1320, 940)
         self.setStyleSheet('QMainWindow { background-color: %s; }' % t.BG)
 
         central = QWidget()
@@ -48,11 +55,19 @@ class DevicePanelWindow(QMainWindow):
         root.addWidget(self._build_header())
 
         # Each panel opens its own MQTT connection, exactly as the standalone
-        # emulator scripts do.
+        # emulator scripts do. Grouped by role: the cabinet sensors first, then
+        # the diagnostic sensors that watch the hardware, then the actuators.
         self.panels = [
             TempSensorPanel(),
+            TempProbeBPanel(),
+            AmbientSensorPanel(),
             DoorSensorPanel(),
+
+            BadgeReaderPanel(),
             PowerSensorPanel(),
+            CurrentSensorPanel(),
+            FanRpmSensorPanel(),
+
             RelayPanel('compressor', 'Compressor', '❄',
                        cfg.TOPIC_COMPRESSOR_CMD, cfg.TOPIC_COMPRESSOR_STS, t.ACCENT),
             RelayPanel('fan', 'Fan', '🌀',
@@ -66,11 +81,14 @@ class DevicePanelWindow(QMainWindow):
         # No alignment flag: the cards stretch to fill their row, so the spare
         # height goes inside the cards rather than into a gap between the rows.
         for index, panel in enumerate(self.panels):
-            grid.addWidget(panel, index // 3, index % 3)
-        for column in range(3):
+            grid.addWidget(panel, index // COLUMNS, index % COLUMNS)
+        for column in range(COLUMNS):
             grid.setColumnStretch(column, 1)
-        grid.setRowStretch(0, 3)
-        grid.setRowStretch(1, 2)
+        # The sensor rows carry more controls than the relay row, so they get a
+        # larger share of the height.
+        grid.setRowStretch(0, 4)
+        grid.setRowStretch(1, 4)
+        grid.setRowStretch(2, 3)
 
         root.addLayout(grid, stretch=1)
 
@@ -86,7 +104,7 @@ class DevicePanelWindow(QMainWindow):
         titles = QVBoxLayout()
         titles.setSpacing(1)
         titles.addWidget(t.label('DEVICE PANEL', size=16, bold=True))
-        titles.addWidget(t.label('3 sensors and 3 relay actuators - each with its own '
+        titles.addWidget(t.label('8 sensors and 3 relay actuators - each with its own '
                                  'MQTT connection', size=11, color=t.TEXT_DIM))
         row.addLayout(titles)
         row.addStretch()

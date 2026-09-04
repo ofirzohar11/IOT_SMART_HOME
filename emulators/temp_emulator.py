@@ -5,6 +5,8 @@ of the cabinet, so the readings react to what the rest of the system does:
 
 * the compressor pulls the temperature down while it is running,
 * an open door lets warm room air in much faster than the closed cabinet leaks,
+* the room temperature reported by the ambient sensor sets what the cabinet is
+  leaking towards, so a hot storeroom really does make cooling harder,
 * a cooling failure can be injected to produce a real temperature excursion.
 
 That makes the whole system a closed control loop: sensor -> data manager ->
@@ -23,8 +25,7 @@ ensure_qt_plugin_path()
 import random
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QCheckBox, QGridLayout, QHBoxLayout, QLabel,
-                             QSlider, QVBoxLayout)
+from PyQt5.QtWidgets import QCheckBox, QGridLayout, QLabel, QVBoxLayout
 
 from config import mqtt_init as cfg
 from config.mqtt_client import parse_json
@@ -51,22 +52,24 @@ class TempSensorPanel(EmulatorPanel):
     def __init__(self):
         super().__init__(
             role='temp',
-            title='🌡  Temperature / Humidity Sensor',
-            subtitle='Data producer - publishes a JSON sample every %.1f s'
+            title='🌡  Temperature Probe A',
+            subtitle='Primary probe - publishes a JSON sample every %.1f s'
                      % (cfg.SENSOR_PUBLISH_MS / 1000.0),
-            topic_note='pub: %s\nsub: %s , %s'
-                       % (cfg.TOPIC_TEMP, cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR),
+            topic_note='pub: %s\nsub: %s , %s , %s'
+                       % (cfg.TOPIC_TEMP, cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR,
+                          cfg.TOPIC_AMBIENT),
         )
-        self.setMinimumWidth(340)
+        self.setMinimumWidth(300)
 
         self.temperature = START_TEMP
         self.humidity = HUM_BASE
         self.compressor_on = False
         self.door_open = False
+        self.ambient = cfg.AMBIENT_NOMINAL_C
 
         self._build_ui()
 
-        self.mqtt.subscribe(cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR)
+        self.mqtt.subscribe(cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR, cfg.TOPIC_AMBIENT)
         self.start_mqtt()
 
         self.timer = QTimer(self)
@@ -102,19 +105,12 @@ class TempSensorPanel(EmulatorPanel):
         box = QVBoxLayout(controls)
         box.setContentsMargins(16, 14, 16, 14)
         box.setSpacing(10)
-        box.addWidget(ui.label('Simulation controls', size=12, bold=True))
-
-        ambient_row = QHBoxLayout()
-        self.ambientLabel = ui.label('Room: 22 °C', size=11, color=ui.TEXT_DIM)
-        self.ambientSlider = QSlider(Qt.Horizontal)
-        self.ambientSlider.setMinimum(15)
-        self.ambientSlider.setMaximum(40)
-        self.ambientSlider.setValue(22)
-        self.ambientSlider.valueChanged.connect(
-            lambda v: self.ambientLabel.setText('Room: %d °C' % v))
-        ambient_row.addWidget(self.ambientLabel)
-        ambient_row.addWidget(self.ambientSlider, stretch=1)
-        box.addLayout(ambient_row)
+        # Room temperature comes from the ambient sensor, not from a control
+        # here, so the two emulators form a second closed loop.
+        self.ambientLabel = ui.label('room: %.0f °C (from ambient sensor)'
+                                     % cfg.AMBIENT_NOMINAL_C,
+                                     size=11, color=ui.TEXT_DIM)
+        box.addWidget(self.ambientLabel)
 
         self.faultCheck = QCheckBox('Inject cooling failure')
         self.onlineCheck = QCheckBox('Sensor online (publishing)')
@@ -133,7 +129,7 @@ class TempSensorPanel(EmulatorPanel):
     @staticmethod
     def _style_value(widget, color):
         widget.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 32px; font-weight: bold; '
+            'color: %s; font-family: %s; font-size: 26px; font-weight: bold; '
             'background: transparent; border: none;' % (color, ui.FONT))
 
     # -- MQTT --------------------------------------------------------------
@@ -143,10 +139,18 @@ class TempSensorPanel(EmulatorPanel):
         elif topic == cfg.TOPIC_DOOR:
             data = parse_json(payload, {})
             self.door_open = str(data.get('state', '')).upper() == 'OPEN'
+        elif topic == cfg.TOPIC_AMBIENT:
+            data = parse_json(payload, {})
+            try:
+                self.ambient = float(data['ambient'])
+                self.ambientLabel.setText('room: %.1f °C (from ambient sensor)'
+                                          % self.ambient)
+            except (KeyError, TypeError, ValueError):
+                pass
 
     # -- simulation --------------------------------------------------------
     def tick(self):
-        ambient = float(self.ambientSlider.value())
+        ambient = self.ambient
         cooling_failed = self.faultCheck.isChecked()
 
         leak = LEAK_OPEN if self.door_open else LEAK_CLOSED

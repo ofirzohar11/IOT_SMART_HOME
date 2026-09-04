@@ -75,13 +75,16 @@ Verify:
 ## 3. Starting everything
 
 There are two layouts. They run identical device code and open identical MQTT
-connections — six clients with six distinct client ids either way. Only the
+connections — eleven clients with eleven distinct client ids either way. Only the
 number of windows differs.
 
 | Mode | Processes | Windows | Best for |
 |---|---|---|---|
-| Separate | 8 | 8 | Showing the architecture — one process per device, like real hardware |
+| Separate | 13 | 13 | Showing the architecture — one process per device, like real hardware |
 | Device panel | 3 | 2 | Demonstrating and recording |
+
+Thirteen windows is a lot to arrange. Use the device panel unless you are
+specifically demonstrating that the devices are independent processes.
 
 The launchers live in `run/`, one folder per platform:
 
@@ -162,15 +165,26 @@ refresh let any component join late.
 ```bash
 .venv/bin/python data_manager/data_manager.py
 .venv/bin/python gui/main_gui.py
+
+# cabinet sensors
 .venv/bin/python emulators/temp_emulator.py
+.venv/bin/python emulators/temp_b_emulator.py
 .venv/bin/python emulators/door_emulator.py
+.venv/bin/python emulators/badge_emulator.py
+
+# diagnostic sensors
+.venv/bin/python emulators/ambient_emulator.py
+.venv/bin/python emulators/current_emulator.py
+.venv/bin/python emulators/fan_rpm_emulator.py
 .venv/bin/python emulators/power_emulator.py
+
+# actuators
 .venv/bin/python emulators/compressor_emulator.py
 .venv/bin/python emulators/fan_emulator.py
 .venv/bin/python emulators/siren_emulator.py
 ```
 
-Or all six devices in one window:
+Or all eleven devices in one window:
 
 ```bash
 .venv/bin/python emulators/device_panel.py
@@ -258,26 +272,101 @@ Press `RESTORE MAINS` to recover.
 
 ### Step 5 — Sensor failure *(about 30 seconds)*
 
-In the sensor window untick **Sensor online (publishing)**. The emulator stops
+In the probe A panel untick **Sensor online (publishing)**. The emulator stops
 transmitting while its window stays open — a stuck sensor, not a crashed one.
 
 After 25 s: `ALARM · SENSOR_OFFLINE`, and the status pill reads
 **SENSOR OFFLINE**. Tick the box again to recover.
 
-### Step 6 — Maintenance mode
+### Step 6 — A probe you cannot trust *(about 45 seconds)*
+
+This is the case a single-probe system cannot detect at all: nothing is out of
+range, and the reading is still wrong.
+
+In the **Temperature Probe B** panel tick **Inject probe drift**. Probe B climbs
+away from probe A while both stay inside plausible values.
+
+| Time | What happens |
+|---|---|
+| — | The `probe B` tile on the dashboard shows a growing `Δ` |
+| Δ over 2 °C | The tile turns red |
+| 30 s later | `ALARM · PROBE_MISMATCH` — *readings cannot be trusted* |
+
+Untick it. Point out that the alarm never says which probe is wrong, because
+nothing in the system can know — that uncertainty *is* the alarm.
+
+**Freeze reading (dead probe)** demonstrates the same rule against the other
+classic failure: a probe that keeps reporting a perfectly reasonable number that
+stopped being true.
+
+### Step 7 — Hardware that ignores its command *(about 40 seconds)*
+
+Every rule so far believed the relays. These two do not.
+
+In the **Compressor Current Sensor** panel tick **Inject open circuit**. The
+relay still reports `ON`, and the compressor card on the dashboard still shows
+its `ON` pill — but the measured line under it drops to `0.00 A` and turns red.
+
+After 15 s: `ALARM · COMPRESSOR_NO_CURRENT — relay or motor failure`.
+
+Do the same with **Inject welded relay**: wait for the compressor to be commanded
+off, and the current stays up. `ALARM · COMPRESSOR_STUCK_ON — contacts welded
+closed`. A refrigerator stuck cooling will freeze its contents, which spoils
+vaccines just as thoroughly as overheating.
+
+### Step 8 — The failure nothing else would catch *(about 40 seconds)*
+
+In the **Fan Tachometer** panel tick **Inject worn bearing**. The fan still
+turns, so no alarm — but at 650 rpm it is below the 900 rpm minimum, and after
+15 s a `WARNING · FAN_DEGRADED` appears. This is predictive maintenance: service
+it now, not after it seizes.
+
+Then tick **Inject stall** instead: `ALARM · FAN_STALLED`. Note that the
+temperature is still perfectly normal. Without the tachometer this failure is
+invisible until the stock at the top of the cabinet has already spoiled.
+
+### Step 9 — Whose fault is it? *(about 40 seconds)*
+
+In the **Ambient Room Sensor** panel drag the slider above 30 °C.
+
+`WARNING · ROOM_HOT` appears, and because the ambient probe feeds probe A's
+thermal model, the cabinet genuinely starts losing ground. When the excursion
+alarm fires, read the **assessment** tile on the dashboard:
+
+> *the storeroom is at 34 C — this is a building cooling problem, not a unit
+> fault*
+
+That sentence sends a building engineer instead of a refrigeration technician.
+Compare it with the assessment during step 3, where the same excursion was
+diagnosed as the compressor's fault.
+
+### Step 10 — Who opened the door *(about 40 seconds)*
+
+Open the door **without** scanning a badge first: `WARNING ·
+UNAUTHORISED_ACCESS`, and the *last door opened by* tile reads **no badge** in
+amber.
+
+Close it, press one of the three badge buttons in the **RFID Badge Reader**
+panel, then open the door again. Now the tile shows the name, and the door
+events in the log and in the History tab carry the operator beside them.
+
+### Step 11 — Maintenance mode
 
 Press **Maintenance mode** at the top right of the main GUI, then trigger any
 fault from the steps above. Conditions are still logged, but the unit is not
 escalated to alarm and the siren stays silent. Press **Leave maintenance** to
 return.
 
-### Step 7 — The stored record
+### Step 12 — The stored record
 
 Open the **History & Reports** tab.
 
 * The tiles summarise the last 24 hours: sample count, min / max / average
-  temperature, minutes spent out of band, warning and alarm counts.
-* **READINGS** is the five-second audit trail; out-of-band temperatures are
+  temperature, minutes spent out of band, door openings, warning and alarm
+  counts.
+* **READINGS** is the five-second audit trail. Note the pairs of columns:
+  `Comp` beside `Amps`, `Fan` beside `RPM` — the command next to the measurement
+  that verifies it. Out-of-band temperatures and unbadged openings are
   highlighted.
 * **ALERT EVENTS** is the transition log — one row per condition start and end,
   matching what you saw live.
@@ -291,17 +380,19 @@ The default timers are realistic but slow for a 10-minute recording. To make the
 alarms fire sooner, edit `config/mqtt_init.py`:
 
 ```python
-DOOR_WARNING_SECONDS = 10       # default 20
-DOOR_ALARM_SECONDS = 20         # default 45
-EXCURSION_ALARM_SECONDS = 30    # default 90
-BATTERY_WARNING_SECONDS = 20    # default 60
-SENSOR_TIMEOUT_SECONDS = 15     # default 25
+DOOR_WARNING_SECONDS = 10        # default 20
+DOOR_ALARM_SECONDS = 20          # default 45
+EXCURSION_ALARM_SECONDS = 30     # default 90
+BATTERY_WARNING_SECONDS = 20     # default 60
+SENSOR_TIMEOUT_SECONDS = 15      # default 25
+PROBE_DISAGREE_SECONDS = 12      # default 30
+ACTUATOR_FAULT_SECONDS = 6       # default 15
 ```
 
 Restart the data manager afterwards — it reads these once at startup.
 
-The **Room temperature** slider in the sensor window is another accelerator:
-raising it makes the cabinet warm up much faster with the door open.
+The **room temperature** slider on the ambient sensor is the other accelerator:
+raising it makes the cabinet warm up much faster, with or without the door open.
 
 ---
 

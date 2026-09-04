@@ -280,20 +280,26 @@ class TrendChart(QFrame):
 #  Composed panels
 # ===========================================================================
 class DeviceCard(QFrame):
-    """One actuator: icon, name, and the state it reported back."""
+    """One actuator: the state it reported, and what its sensor measured.
 
-    def __init__(self, name, icon, on_color):
+    The pill is the *command* echoed back by the relay; the line underneath is
+    an independent measurement of what the hardware actually did. When those two
+    disagree, the card says so - which is the entire point of adding the current
+    clamp and the tachometer.
+    """
+
+    def __init__(self, name, icon, on_color, measured=True):
         super().__init__()
         self.on_color = on_color
         self.setObjectName('panel')
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(126)
         self._apply_border(t.BORDER)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(4)
 
-        self.iconLabel = t.label(icon, size=24, align=Qt.AlignCenter)
+        self.iconLabel = t.label(icon, size=22, align=Qt.AlignCenter)
         self.nameLabel = t.label(name.upper(), size=11, color=t.TEXT_DIM, bold=True,
                                  align=Qt.AlignCenter)
         self.stateLabel = QLabel('OFF')
@@ -304,6 +310,12 @@ class DeviceCard(QFrame):
         layout.addWidget(self.iconLabel)
         layout.addWidget(self.nameLabel)
         layout.addWidget(self.stateLabel)
+
+        self.measuredLabel = None
+        if measured:
+            self.measuredLabel = t.label('-- ', size=12, color=t.TEXT_DIM, bold=True,
+                                         align=Qt.AlignCenter)
+            layout.addWidget(self.measuredLabel)
 
     def _apply_border(self, color):
         self.setStyleSheet('QFrame#panel { background-color: %s; border: 1px solid %s; '
@@ -320,6 +332,15 @@ class DeviceCard(QFrame):
     def set_state(self, is_on):
         self._paint_pill(is_on)
         self._apply_border(self.on_color if is_on else t.BORDER)
+
+    def set_measurement(self, text, color=t.TEXT_DIM):
+        """Show the independent reading, coloured red when it contradicts the command."""
+        if self.measuredLabel is None:
+            return
+        self.measuredLabel.setText(text)
+        self.measuredLabel.setStyleSheet(
+            'color: %s; font-family: %s; font-size: 12px; font-weight: bold; '
+            'background: transparent; border: none;' % (color, t.FONT))
 
 
 class DoorCard(QFrame):
@@ -514,24 +535,28 @@ class EventLog(QFrame):
 
 
 class StatTile(QFrame):
+    """A caption with one number or short phrase above it."""
 
-    def __init__(self, caption):
+    def __init__(self, caption, value_size=20, wrap=False):
         super().__init__()
+        self.value_size = value_size
         self.setObjectName('panel')
         self.setStyleSheet(t.panel_style(background=t.PANEL_ALT))
         self.setMinimumWidth(120)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(2)
-        self.valueLabel = t.label('--', size=20, bold=True)
+        self.valueLabel = t.label('--', size=value_size, bold=True)
+        self.valueLabel.setWordWrap(wrap)
         layout.addWidget(self.valueLabel)
         layout.addWidget(t.label(caption, size=10, color=t.TEXT_DIM))
 
     def set_value(self, text, color=t.TEXT):
         self.valueLabel.setText(text)
         self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 20px; font-weight: bold; '
-            'background: transparent; border: none;' % (color, t.FONT))
+            'color: %s; font-family: %s; font-size: %dpx; font-weight: bold; '
+            'background: transparent; border: none;'
+            % (color, t.FONT, self.value_size))
 
 
 SCROLLBAR_STYLE = '''
@@ -571,9 +596,11 @@ TABLE_STYLE = '''
 # ===========================================================================
 class HistoryTab(QWidget):
 
-    READING_COLUMNS = ['Time', 'Temp °C', 'Hum %', 'Door', 'Power', 'Batt %',
-                       'Compressor', 'Fan', 'Siren', 'Level']
-    EVENT_COLUMNS = ['Time', 'Level', 'Code', 'Message']
+    # Mirrors db.READING_FIELDS, with shorter headers for the table.
+    READING_COLUMNS = ['Time', 'A °C', 'B °C', 'Room °C', 'Hum %', 'Door',
+                       'Operator', 'Power', 'Batt %', 'Comp', 'Amps', 'Fan',
+                       'RPM', 'Siren', 'Level']
+    EVENT_COLUMNS = ['Time', 'Level', 'Code', 'Message', 'Operator']
 
     def __init__(self):
         super().__init__()
@@ -592,6 +619,7 @@ class HistoryTab(QWidget):
                              ('temp_max', 'max temperature'),
                              ('temp_avg', 'average temperature'),
                              ('excursion', 'minutes out of band'),
+                             ('door_events', 'door openings'),
                              ('warnings', 'warnings'),
                              ('alarms', 'alarms')):
             tile = StatTile(caption)
@@ -671,6 +699,7 @@ class HistoryTab(QWidget):
         excursion = stats['excursion_minutes']
         self.tiles['excursion'].set_value(
             '%.1f' % excursion, t.WARN if excursion > 0 else t.OK)
+        self.tiles['door_events'].set_value(str(stats['door_events']))
         self.tiles['warnings'].set_value(
             str(stats['warnings']), t.WARN if stats['warnings'] else t.TEXT)
         self.tiles['alarms'].set_value(
@@ -679,32 +708,44 @@ class HistoryTab(QWidget):
     def _fill_readings(self, rows):
         self.readingsTable.setRowCount(len(rows))
         for r, row in enumerate(rows):
-            (ts, temp, hum, door, power, battery, compressor, fan, siren, level) = row
+            (ts, temp, temp_b, ambient, hum, door, operator, power, battery,
+             compressor, current, fan, rpm, siren, level) = row
+
+            def number(value, fmt):
+                return '--' if value is None else fmt % value
+
             values = [
                 ts[11:] if len(ts) > 11 else ts,  # only the last 24 h is shown
-                '--' if temp is None else '%.2f' % temp,
-                '--' if hum is None else '%.0f' % hum,
+                number(temp, '%.2f'),
+                number(temp_b, '%.2f'),
+                number(ambient, '%.1f'),
+                number(hum, '%.0f'),
                 door or '--',
+                operator or '--',
                 power or '--',
-                '--' if battery is None else '%.0f' % battery,
+                number(battery, '%.0f'),
                 compressor or '--',
+                number(current, '%.2f'),
                 fan or '--',
+                number(rpm, '%.0f'),
                 siren or '--',
                 level or '--',
             ]
             for c, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if c == 9:
+                if c == 14:
                     item.setForeground(QColor(t.level_color(level)))
-                if c == 1 and temp is not None and not (
+                elif c == 1 and temp is not None and not (
                         cfg.TEMP_TARGET_MIN <= temp <= cfg.TEMP_TARGET_MAX):
+                    item.setForeground(QColor(t.WARN))
+                elif c == 6 and operator == cfg.UNKNOWN_OPERATOR:
                     item.setForeground(QColor(t.WARN))
                 self.readingsTable.setItem(r, c, item)
 
     def _fill_events(self, rows):
         self.eventsTable.setRowCount(len(rows))
-        for r, (ts, level, code, message) in enumerate(rows):
-            for c, value in enumerate((ts, level, code, message)):
+        for r, (ts, level, code, message, operator) in enumerate(rows):
+            for c, value in enumerate((ts, level, code, message, operator or '')):
                 item = QTableWidgetItem(str(value))
                 if c == 1:
                     item.setForeground(QColor(t.level_color(level)))
@@ -740,7 +781,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Cold Chain Monitor - Pharmaceutical Storage Unit 1')
-        self.setMinimumSize(1180, 820)
+        self.setMinimumSize(1280, 920)
         self.setStyleSheet('QMainWindow { background-color: %s; }' % t.BG)
 
         self.mode = 'MONITORING'
@@ -857,11 +898,24 @@ class MainWindow(QMainWindow):
         topRow.addWidget(self.humGauge, stretch=3)
         topRow.addLayout(sideColumn, stretch=2)
 
+        # Diagnostic readings that do not warrant a full gauge
+        telemetryRow = QHBoxLayout()
+        telemetryRow.setSpacing(12)
+        self.probeTile = StatTile('probe B  (redundant)')
+        self.ambientTile = StatTile('storeroom temperature')
+        self.operatorTile = StatTile('last door opened by', value_size=15)
+        self.diagnosisTile = StatTile('assessment', value_size=12, wrap=True)
+        for tile in (self.probeTile, self.ambientTile, self.operatorTile,
+                     self.diagnosisTile):
+            tile.setMinimumHeight(66)
+            telemetryRow.addWidget(tile)
+        telemetryRow.setStretch(3, 2)  # the assessment text needs more room
+
         deviceRow = QHBoxLayout()
         deviceRow.setSpacing(12)
         self.compressorCard = DeviceCard('Compressor', '❄', t.ACCENT)
         self.fanCard = DeviceCard('Fan', '🌀', t.OK)
-        self.sirenCard = DeviceCard('Siren', '🚨', t.ALARM)
+        self.sirenCard = DeviceCard('Siren', '🚨', t.ALARM, measured=False)
         for card in (self.compressorCard, self.fanCard, self.sirenCard):
             deviceRow.addWidget(card)
 
@@ -873,6 +927,7 @@ class MainWindow(QMainWindow):
         bottomRow.addWidget(self.eventLog, stretch=2)
 
         layout.addLayout(topRow)
+        layout.addLayout(telemetryRow)
         layout.addLayout(deviceRow)
         layout.addLayout(bottomRow, stretch=1)
         return page
@@ -909,6 +964,9 @@ class MainWindow(QMainWindow):
         self.powerCard.update_state(data.get('power', '--'),
                                     float(data.get('battery', 0) or 0))
 
+        self._update_telemetry(data)
+        self._update_measurements(data)
+
         level = data.get('level', cfg.LEVEL_INFO)
         sensor_state = data.get('sensor_state', 'ONLINE')
         if data.get('mode') == 'MAINTENANCE':
@@ -923,10 +981,78 @@ class MainWindow(QMainWindow):
                         cfg.LEVEL_ALARM: 'ALARM'}
             self._paint_pill(t.level_color(level), captions.get(level, level))
 
+    def _update_telemetry(self, data):
+        probe_b = data.get('temperature_b')
+        delta = data.get('probe_delta')
+        if probe_b is None:
+            self.probeTile.set_value('--', t.TEXT_DIM)
+        else:
+            disagrees = delta is not None and delta > cfg.PROBE_DISAGREE_C
+            suffix = ('  Δ%.1f' % delta) if delta is not None else ''
+            self.probeTile.set_value('%.1f °C%s' % (probe_b, suffix),
+                                     t.ALARM if disagrees else t.OK)
+
+        ambient = data.get('ambient')
+        if ambient is None:
+            self.ambientTile.set_value('--', t.TEXT_DIM)
+        else:
+            self.ambientTile.set_value(
+                '%.1f °C' % ambient,
+                t.WARN if ambient >= cfg.AMBIENT_WARNING_C else t.TEXT)
+
+        operator = data.get('operator')
+        if not operator:
+            self.operatorTile.set_value('—', t.TEXT_DIM)
+        elif operator == cfg.UNKNOWN_OPERATOR:
+            self.operatorTile.set_value('no badge', t.WARN)
+        else:
+            self.operatorTile.set_value(operator, t.TEXT)
+
+        diagnosis = data.get('diagnosis') or ''
+        level = data.get('level', cfg.LEVEL_INFO)
+        if diagnosis:
+            self.diagnosisTile.set_value(diagnosis, t.level_color(level))
+        else:
+            self.diagnosisTile.set_value('operating normally', t.TEXT_DIM)
+
+    def _update_measurements(self, data):
+        """Show each actuator's independent reading, flagged when it contradicts."""
+        current = data.get('compressor_current')
+        if current is None:
+            self.compressorCard.set_measurement('-- A')
+        else:
+            commanded_on = data.get('compressor') == 'ON'
+            drawing = current >= cfg.CURRENT_RUNNING_MIN_A
+            mismatch = commanded_on != drawing
+            overload = current > cfg.CURRENT_OVERLOAD_A
+            color = t.ALARM if (mismatch or overload) else (
+                t.OK if drawing else t.TEXT_DIM)
+            self.compressorCard.set_measurement('%.2f A' % current, color)
+
+        rpm = data.get('fan_rpm')
+        if rpm is None:
+            self.fanCard.set_measurement('-- rpm')
+        else:
+            commanded_on = data.get('fan') == 'ON'
+            turning = rpm >= cfg.FAN_RPM_MIN
+            if commanded_on != turning:
+                color = t.ALARM
+            elif turning and rpm < cfg.FAN_RPM_DEGRADED:
+                color = t.WARN
+            elif turning:
+                color = t.OK
+            else:
+                color = t.TEXT_DIM
+            self.fanCard.set_measurement('%d rpm' % int(rpm), color)
+
     def apply_alert(self, data):
+        message = data.get('message', '')
+        operator = data.get('operator')
+        if operator:
+            message += '  ·  %s' % operator
         self.eventLog.add_event(data.get('level', cfg.LEVEL_INFO),
                                 data.get('code', ''),
-                                data.get('message', ''),
+                                message,
                                 data.get('ts'))
 
     def apply_device_status(self, device, state):
