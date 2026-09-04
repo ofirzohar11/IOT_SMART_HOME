@@ -116,11 +116,11 @@ rather than a data generator with a dashboard attached.
 Each device is written once as an **`EmulatorPanel`** — a self-contained card
 that owns its own MQTT client. That panel is then shown one of two ways:
 
-* **One process per device** (`./start_all.sh`) — eight processes, eight windows.
+* **One process per device** (`start_all`) — eight processes, eight windows.
   This is how real hardware behaves, and it matches the course's reference
   project.
-* **One window for all devices** (`./start_all.sh --panel`) — three processes.
-  Far easier to arrange on screen and to record.
+* **One window for all devices** (`start_panel`) — three processes. Far easier
+  to arrange on screen and to record.
 
 The two modes run *identical device code* and open *identical MQTT connections*:
 six clients with six distinct client ids on the broker either way. Only the
@@ -258,12 +258,12 @@ ColdChainMonitor/
 ├── gui/             operator dashboard and history
 ├── ui/              shared theme and Qt bootstrap
 ├── docs/            screenshots
+├── run/
+│   ├── macos/       start_all.command, start_panel.command
+│   └── windows/     start_all.bat, start_panel.bat
 ├── README.md        this file
 ├── RUNNING.md       installation, running, demo script, troubleshooting
-├── requirements.txt
-├── start_all.sh     launcher (macOS / Linux), --panel for single-window mode
-├── start_all.bat    launcher (Windows), one window per device
-└── start_panel.bat  launcher (Windows), single-window mode
+└── requirements.txt
 ```
 
 ---

@@ -83,49 +83,68 @@ number of windows differs.
 | Separate | 8 | 8 | Showing the architecture — one process per device, like real hardware |
 | Device panel | 3 | 2 | Demonstrating and recording |
 
-### macOS / Linux
+The launchers live in `run/`, one folder per platform:
 
-Make the launcher executable once:
-
-```bash
-chmod +x start_all.sh
+```
+run/
+├── macos/
+│   ├── start_all.command      one window per device
+│   └── start_panel.command    all devices in one window
+└── windows/
+    ├── start_all.bat          one window per device
+    └── start_panel.bat        all devices in one window
 ```
 
-**One window per device** (eight processes):
+Each launcher finds the project root by itself, and uses `.venv` automatically
+if it exists. You do not need to `cd` anywhere or activate anything.
+
+### macOS
+
+**Double-click** `run/macos/start_panel.command` in Finder. Terminal opens and
+everything starts.
+
+Or from a terminal:
 
 ```bash
-PYTHON="$PWD/.venv/bin/python" ./start_all.sh
+run/macos/start_panel.command
 ```
-
-**All devices in one window** (three processes):
 
 ```bash
-PYTHON="$PWD/.venv/bin/python" ./start_all.sh --panel
+run/macos/start_all.command
 ```
 
-`Ctrl-C` in that terminal stops every component.
+`Ctrl-C` in that terminal stops every component at once.
 
-> If you installed the packages system-wide instead of in a virtual environment,
-> plain `./start_all.sh` is enough.
+> **First time only.** macOS may refuse to open a downloaded `.command` file.
+> Right-click it → **Open** → **Open** confirms it once. If it is not
+> executable, run `chmod +x run/macos/*.command run/macos/*.sh`.
 
 ### Windows
 
-Double-click `start_all.bat` for one window per device, or `start_panel.bat` for
-the single-window layout. From a command prompt:
+**Double-click** `run\windows\start_panel.bat`, or from a command prompt:
 
 ```
-start_all.bat
+run\windows\start_panel.bat
 ```
 
 ```
-start_panel.bat
+run\windows\start_all.bat
 ```
 
 Each component opens in its own console window; close them to stop.
 
+### Using a different interpreter
+
+Both launchers respect a `PYTHON` variable if you want to override the automatic
+choice:
+
+```bash
+PYTHON=/usr/local/bin/python3.11 run/macos/start_all.command
+```
+
 ### Which one to record
 
-Use `--panel`. Two windows — the device panel and the main GUI — fit side by
+Use `start_panel`. Two windows — the device panel and the main GUI — fit side by
 side on one screen, so every control you press and its effect on the dashboard
 are visible in the same frame.
 
@@ -288,10 +307,10 @@ raising it makes the cabinet warm up much faster with the door open.
 
 ## 7. Stopping
 
-**macOS / Linux:** `Ctrl-C` in the terminal running `start_all.sh` stops
-everything.
+**macOS:** `Ctrl-C` in the terminal the launcher opened stops everything, and so
+does closing that terminal window.
 
-If a window was started separately and is still running:
+If a component was started separately and is still running:
 
 ```bash
 pkill -f "data_manager.py"
@@ -368,11 +387,16 @@ TOPIC_ROOT = 'HIT/coldchain/<your-name>/unit1'
 
 Restart every component so they all agree on the new root.
 
-### `./start_all.sh: Permission denied`
+### `Permission denied` when running a launcher
 
 ```bash
-chmod +x start_all.sh
+chmod +x run/macos/*.command run/macos/*.sh
 ```
+
+### macOS refuses to open the `.command` file
+
+Gatekeeper blocks scripts that arrived from the internet. Right-click the file
+in Finder → **Open** → **Open**. You only have to confirm once.
 
 ### `ModuleNotFoundError: No module named 'PyQt5'`
 
@@ -407,12 +431,15 @@ rm database/coldchain.db*
 
 ## 9. Quick reference
 
-| Task | Command (macOS / Linux) |
+| Task | Command (macOS) |
 |---|---|
 | Install | `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
-| Start everything, 8 windows | `PYTHON="$PWD/.venv/bin/python" ./start_all.sh` |
-| Start everything, 1 device window | `PYTHON="$PWD/.venv/bin/python" ./start_all.sh --panel` |
+| Start everything, 8 windows | `run/macos/start_all.command` |
+| Start everything, 1 device window | `run/macos/start_panel.command` |
 | Start one component | `.venv/bin/python gui/main_gui.py` |
 | Stop everything | `Ctrl-C`, or `pkill -f "data_manager.py"` |
 | Clear the database | `rm database/coldchain.db*` |
 | Check for stray managers | `ps aux \| grep "[d]ata_manager.py"` |
+
+On Windows the equivalents are `run\windows\start_all.bat` and
+`run\windows\start_panel.bat`.
