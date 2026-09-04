@@ -1,14 +1,31 @@
 # Cold Chain Monitor
 
-An IoT monitoring system for a pharmaceutical refrigerator, built for the HIT IoT
-course project.
+An IoT monitoring and control system for a pharmaceutical refrigerator, built as
+the final project for the HIT IoT course.
 
-Vaccines and many medicines must be kept between **2 °C and 8 °C**. A unit that
-drifts out of that band for long enough spoils its entire contents, and the loss
-is only discovered later unless something is watching. This project is that
-watcher: three kinds of emulated devices publish to an MQTT broker, a data
-manager applies the storage rules and drives the cooling hardware, and an
-operator GUI shows the live state plus the stored audit trail.
+> **Looking for setup and run instructions?** They are in **[RUNNING.md](RUNNING.md)**.
+
+---
+
+## The problem
+
+Vaccines and many medicines must be stored between **2 °C and 8 °C**. A unit that
+drifts outside that band for long enough spoils its entire contents — and because
+the damage is invisible, the loss is usually discovered only when the medicine
+fails to work.
+
+Two things make this hard to catch with a plain thermometer:
+
+1. **Duration matters more than the reading.** A cabinet at 9 °C for ten seconds
+   while somebody takes out a box is fine. The same 9 °C for two minutes is not.
+2. **The causes are not temperature.** A door left ajar, a power cut, a dead
+   sensor — each ends in spoiled stock, and each needs to be caught *before* the
+   temperature has moved.
+
+This project addresses both: three kinds of emulated devices publish to an MQTT
+broker, a data manager applies duration-aware storage rules and drives the
+cooling hardware, and an operator GUI shows the live state plus the stored audit
+trail.
 
 ![Dashboard](docs/screenshots/01_dashboard_normal.png)
 
@@ -16,8 +33,9 @@ operator GUI shows the live state plus the stored audit trail.
 
 ## Architecture
 
-Eight independent processes, each with its own MQTT connection, exactly as
-separate physical devices would behave.
+Eight independent processes, each with its own MQTT connection — exactly how
+separate physical devices behave. No process imports another's state; everything
+travels over the broker.
 
 ```mermaid
 flowchart LR
@@ -57,9 +75,19 @@ flowchart LR
     B -- compressor/sts --> T
 ```
 
-The compressor status feeds back into the temperature sensor, so the whole thing
-is a **closed control loop**: the cabinet actually cools down when the manager
-switches the compressor on, and warms up again when it switches off.
+### The closed loop
+
+Note the last edge: the **compressor status feeds back into the temperature
+sensor**. The sensor does not emit random numbers — it runs a thermal model of
+the cabinet and reacts to what the system actually does:
+
+* while the compressor runs, the temperature falls,
+* while the door is open, warm room air leaks in far faster,
+* with a cooling fault injected, the compressor is commanded on but has no
+  effect.
+
+So the system is a genuine control loop — sensor → manager → relay → sensor —
+rather than a data generator with a dashboard attached.
 
 ---
 
@@ -67,19 +95,20 @@ switches the compressor on, and warms up again when it switches off.
 
 | Component | File | Role |
 |---|---|---|
-| Temperature / humidity sensor | `emulators/temp_emulator.py` | Data producer. Runs a thermal model of the cabinet and publishes a JSON sample every 3 s. Cooling failures and sensor drop-outs can be injected. |
-| Door sensor | `emulators/door_emulator.py` | Operator input. Retained OPEN / CLOSED state, with an optional auto-close. |
+| Temperature / humidity sensor | `emulators/temp_emulator.py` | Data producer. Thermal model of the cabinet, publishes a JSON sample every 3 s. Room temperature, cooling failure and sensor drop-out can all be varied at runtime. |
+| Door sensor | `emulators/door_emulator.py` | Operator input. Retained OPEN / CLOSED state with an optional auto-close. |
 | Power supply sensor | `emulators/power_emulator.py` | Reports mains vs. backup battery and the charge level, which drains while on battery. |
-| Compressor relay | `emulators/compressor_emulator.py` | Actuator. Cooling element. |
-| Fan relay | `emulators/fan_emulator.py` | Actuator. Air circulation. |
-| Siren relay | `emulators/siren_emulator.py` | Actuator. Audible alarm. |
-| Data manager | `data_manager/data_manager.py` | Subscribes to every sensor, evaluates the rules once per second, drives the actuators, writes to SQLite and publishes status and alerts. |
+| Compressor relay | `emulators/compressor_emulator.py` | Actuator — the cooling element. |
+| Fan relay | `emulators/fan_emulator.py` | Actuator — air circulation. |
+| Siren relay | `emulators/siren_emulator.py` | Actuator — audible alarm. |
+| Data manager | `data_manager/data_manager.py` | Subscribes to every sensor, evaluates the rules once per second, drives the actuators, writes to SQLite, publishes status and alerts. |
 | Main GUI | `gui/main_gui.py` | Operator dashboard and the history / reports tab. |
 
-The three relays share `emulators/relay_base.py` because a relay is a relay; only
-the name, topics and colour differ. All windows share the palette in
-`ui/theme.py`, and every process uses the same MQTT wrapper in
-`config/mqtt_client.py`.
+<p align="center">
+  <img src="docs/screenshots/04_emulator_temp.png" width="300" alt="Temperature sensor emulator">
+  <img src="docs/screenshots/05_emulator_door.png" width="270" alt="Door sensor emulator">
+  <img src="docs/screenshots/07_emulator_relay.png" width="265" alt="Relay actuator emulator">
+</p>
 
 ---
 
@@ -89,34 +118,42 @@ Root: `HIT/coldchain/ofir/unit1`
 
 | Topic | Direction | Payload |
 |---|---|---|
-| `sensor/temp` | sensor → manager, GUI | `{"temperature": 5.2, "humidity": 46.0, "unit": "C"}` |
-| `sensor/door` | sensor → manager (retained) | `{"state": "OPEN"}` |
-| `sensor/power` | sensor → manager (retained) | `{"source": "BATTERY", "battery": 74.0}` |
+| `sensor/temp` | sensor → manager | `{"temperature": 5.2, "humidity": 46.0, "unit": "C"}` |
+| `sensor/door` | sensor → manager *(retained)* | `{"state": "OPEN"}` |
+| `sensor/power` | sensor → manager *(retained)* | `{"source": "BATTERY", "battery": 74.0}` |
 | `actuator/<device>/cmd` | manager → relay | `ON` / `OFF` |
-| `actuator/<device>/sts` | relay → manager, GUI (retained) | `ON` / `OFF` |
+| `actuator/<device>/sts` | relay → manager, GUI *(retained)* | `ON` / `OFF` |
 | `alert` | manager → GUI | `{"level": "ALARM", "code": "DOOR_OPEN", "message": "...", "ts": "..."}` |
 | `status` | manager → GUI | consolidated snapshot, once per second |
-| `mode/cmd` | GUI → manager (retained) | `MONITORING` / `MAINTENANCE` |
+| `mode/cmd` | GUI → manager *(retained)* | `MONITORING` / `MAINTENANCE` |
 
 `<device>` is one of `compressor`, `fan`, `siren`.
+
+**Why commands and statuses are separate topics.** A command says what the
+manager *wants*; a status says what the relay *did*. The GUI shows the status,
+so the dashboard reflects the hardware rather than an assumption about it. It
+also means a relay that starts late is not silently missing — it announces its
+state on connect, and the manager re-sends commands every 15 s.
 
 ---
 
 ## Rules
 
-All thresholds live in `config/mqtt_init.py`.
+All thresholds and timings live in `config/mqtt_init.py`.
 
-**Instantaneous**
+### Instantaneous
 
 | Condition | Level |
 |---|---|
 | Temperature outside 2–8 °C | WARNING |
 | Temperature outside 0–10 °C | ALARM |
 | Humidity outside 30–70 % | WARNING |
-| Humidity above 85 % | ALARM (condensation risk) |
+| Humidity above 85 % | ALARM — condensation risk |
 
-**Time based** — these are what make the manager more than a thermometer, and
-they are the reason it keeps state instead of reacting message by message:
+### Time based
+
+These are the rules that make the manager more than a thermometer, and the
+reason it holds state instead of reacting message by message:
 
 | Condition | Level |
 |---|---|
@@ -127,19 +164,30 @@ they are the reason it keeps state instead of reacting message by message:
 | Backup battery at or below 20 % | ALARM |
 | No sensor message for 25 s | ALARM — sensor offline |
 
-**Control**
+The sensor-offline rule has a start-up grace period, so a manager launched
+before the emulators does not alarm on its first tick.
 
-* Compressor uses hysteresis: on above 6.5 °C, off below 3.5 °C, so the relay
-  does not chatter around the 8 °C limit.
-* The compressor is forced off while the door is open, the way real units behave
-  so the coil does not ice up.
-* The fan follows the compressor, and also runs when humidity is high.
-* The siren follows any active ALARM.
-* **Maintenance mode** suppresses escalation while a technician services the
-  unit. Conditions are still logged; the unit just is not driven to alarm.
+### Control logic
 
-Alerts are **de-duplicated**: a row is written when a condition starts and when
-it clears, not on every one-second evaluation.
+* **Hysteresis.** The compressor switches on above 6.5 °C and off below 3.5 °C.
+  A single threshold at 8 °C would make the relay chatter on and off every few
+  seconds around the limit.
+* **Door lockout.** The compressor is forced off while the door is open, the way
+  real units behave so the evaporator coil does not ice up.
+* **Fan.** Follows the compressor, and also runs on its own when humidity is high.
+* **Siren.** Follows any active ALARM.
+* **Maintenance mode.** Suppresses escalation while a technician services the
+  unit. Conditions are still evaluated and logged — the unit is simply not driven
+  to alarm, and the actuators are parked off.
+
+### Alert de-duplication
+
+An event is written when a condition **starts** and when it **clears** — not on
+every one-second evaluation. Without this, ninety seconds of an open door would
+produce ninety identical warning rows and the log would be unreadable. The
+manager tracks the active level per alert code and only writes on a transition.
+
+![Alarm state](docs/screenshots/02_dashboard_alarm.png)
 
 ---
 
@@ -147,98 +195,73 @@ it clears, not on every one-second evaluation.
 
 SQLite, in WAL mode so the GUI can read while the manager writes.
 
-* `readings` — a full state snapshot every 5 s: temperature, humidity, door,
-  power, battery, all three actuator states and the resulting level. This is the
-  audit trail a regulator would ask for.
-* `events` — one row per alert transition, with level, code and message.
+**`readings`** — a full state snapshot every 5 s: temperature, humidity, door,
+power source, battery, all three actuator states, and the resulting alert level.
+This is the audit trail a regulator would ask for.
 
-The History tab reads both back, summarises the last 24 hours (min / max /
-average temperature, minutes spent out of band, warning and alarm counts) and
-exports the readings to CSV.
+**`events`** — one row per alert transition: timestamp, level, code, message.
+
+The History tab reads both back, summarises the last 24 hours — minimum, maximum
+and average temperature, minutes spent out of band, warning and alarm counts —
+and exports the readings to CSV.
 
 ![History](docs/screenshots/03_history.png)
 
 ---
 
-## Running it
+## Design notes
 
-Requires Python 3.8+.
+**Shared modules over copy-paste.** The three relays are behaviourally identical,
+so they share `emulators/relay_base.py`; only the name, topics and colour differ.
+Every process uses the same MQTT wrapper (`config/mqtt_client.py`) and the same
+palette (`ui/theme.py`). Each emulator is still a separate process with its own
+broker connection — the sharing is in the source, not at runtime.
 
-```bash
-pip install -r requirements.txt
-```
+**Threading.** paho-mqtt delivers callbacks on its own network thread, and Qt
+widgets may only be touched from the main thread. Every GUI process converts
+incoming messages into Qt signals before anything on screen is updated. The data
+manager, which has no GUI, guards its state with a lock instead.
 
-macOS / Linux:
-
-```bash
-./start_all.sh
-```
-
-Windows:
-
-```
-start_all.bat
-```
-
-Both scripts start all eight processes. To run a single component:
-
-```bash
-python data_manager/data_manager.py
-python gui/main_gui.py
-python emulators/temp_emulator.py
-```
-
-The GUI connects to the broker on its own; the emulators connect on start-up.
-Order does not matter — retained messages and the periodic actuator refresh let
-components join late.
-
-### Demo script
-
-1. Start everything. The unit settles into its cooling cycle, compressor
-   switching on around 6.5 °C and off around 3.5 °C.
-2. **Open the door.** Warm air enters, the compressor stops, and after 20 s the
-   door warning appears; after 45 s it becomes an alarm and the siren switches on.
-3. **Close the door** and watch the conditions clear.
-4. On the sensor window, tick **Inject cooling failure**. The compressor keeps
-   being commanded on but the temperature climbs anyway, first out of the storage
-   band (warning), then past the hard limit and past 90 s of excursion (two
-   separate alarms).
-5. On the power window, press **Simulate power cut** and let the battery drain
-   through the warning and the low-battery alarm.
-6. Untick the sensor's **online** box to demonstrate the sensor-offline alarm.
-7. Open **History & Reports** to show the stored audit trail and export a CSV.
-
-![Alarm state](docs/screenshots/02_dashboard_alarm.png)
+**JSON payloads.** Sensor messages are JSON rather than formatted strings, so
+adding a field does not break every parser, and a malformed message is rejected
+cleanly instead of raising an exception inside a callback.
 
 ---
 
-## Configuration
-
-Everything tunable is in `config/mqtt_init.py`: broker choice (`BROKER_INDEX`,
-0 = HIT college broker, 1 = public HiveMQ), the topic root, all thresholds and
-all timings. Change `TOPIC_ROOT` if two people run the project against the public
-broker at the same time.
-
-## Note for macOS
-
-Some PyQt5 wheels do not export their Qt plugin directory and Qt then refuses to
-start with `Could not find the Qt platform plugin "cocoa"`. `ui/qt_env.py` sets
-the path from the installed package before the first window is created, so no
-environment variable is needed.
-
----
-
-## Layout
+## Project layout
 
 ```
 ColdChainMonitor/
-├── config/          broker settings, topics, thresholds, MQTT wrapper
+├── config/          broker settings, topic tree, thresholds, MQTT wrapper
 ├── database/        SQLite schema, queries, CSV export
 ├── emulators/       three sensors, three relays, shared window chrome
 ├── data_manager/    rules, control loop, persistence
 ├── gui/             operator dashboard and history
 ├── ui/              shared theme and Qt bootstrap
 ├── docs/            screenshots
+├── README.md        this file
+├── RUNNING.md       installation, running, demo script, troubleshooting
+├── requirements.txt
 ├── start_all.sh     launcher (macOS / Linux)
 └── start_all.bat    launcher (Windows)
 ```
+
+---
+
+## Configuration
+
+Everything tunable is in `config/mqtt_init.py`:
+
+| Setting | Meaning |
+|---|---|
+| `BROKER_INDEX` | `0` = HIT college broker, `1` = public HiveMQ |
+| `TOPIC_ROOT` | Topic namespace — change it if two people run against the public broker at once |
+| `TEMP_TARGET_MIN` / `MAX` | The storage band |
+| `TEMP_ALARM_MIN` / `MAX` | Hard limits |
+| `DOOR_WARNING_SECONDS`, `DOOR_ALARM_SECONDS` | Door timers |
+| `EXCURSION_ALARM_SECONDS` | Tolerated excursion duration |
+| `COMPRESSOR_ON_ABOVE` / `OFF_BELOW` | Hysteresis band |
+| `SENSOR_PUBLISH_MS`, `DB_WRITE_INTERVAL_S` | Timing |
+
+Shortening the timers is useful when recording a demo — see
+[RUNNING.md](RUNNING.md).
