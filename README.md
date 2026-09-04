@@ -103,12 +103,31 @@ rather than a data generator with a dashboard attached.
 | Siren relay | `emulators/siren_emulator.py` | Actuator — audible alarm. |
 | Data manager | `data_manager/data_manager.py` | Subscribes to every sensor, evaluates the rules once per second, drives the actuators, writes to SQLite, publishes status and alerts. |
 | Main GUI | `gui/main_gui.py` | Operator dashboard and the history / reports tab. |
+| Device panel | `emulators/device_panel.py` | Optional shell that hosts all six devices in one window. |
 
 <p align="center">
   <img src="docs/screenshots/04_emulator_temp.png" width="300" alt="Temperature sensor emulator">
   <img src="docs/screenshots/05_emulator_door.png" width="270" alt="Door sensor emulator">
   <img src="docs/screenshots/07_emulator_relay.png" width="265" alt="Relay actuator emulator">
 </p>
+
+### Two ways to run the same devices
+
+Each device is written once as an **`EmulatorPanel`** — a self-contained card
+that owns its own MQTT client. That panel is then shown one of two ways:
+
+* **One process per device** (`./start_all.sh`) — eight processes, eight windows.
+  This is how real hardware behaves, and it matches the course's reference
+  project.
+* **One window for all devices** (`./start_all.sh --panel`) — three processes.
+  Far easier to arrange on screen and to record.
+
+The two modes run *identical device code* and open *identical MQTT connections*:
+six clients with six distinct client ids on the broker either way. Only the
+window chrome differs. Nothing about the message flow, the topics or the rules
+changes.
+
+![Device panel](docs/screenshots/08_device_panel.png)
 
 ---
 
@@ -234,7 +253,7 @@ cleanly instead of raising an exception inside a callback.
 ColdChainMonitor/
 ├── config/          broker settings, topic tree, thresholds, MQTT wrapper
 ├── database/        SQLite schema, queries, CSV export
-├── emulators/       three sensors, three relays, shared window chrome
+├── emulators/       three sensors, three relays, shared panel base, device panel
 ├── data_manager/    rules, control loop, persistence
 ├── gui/             operator dashboard and history
 ├── ui/              shared theme and Qt bootstrap
@@ -242,8 +261,9 @@ ColdChainMonitor/
 ├── README.md        this file
 ├── RUNNING.md       installation, running, demo script, troubleshooting
 ├── requirements.txt
-├── start_all.sh     launcher (macOS / Linux)
-└── start_all.bat    launcher (Windows)
+├── start_all.sh     launcher (macOS / Linux), --panel for single-window mode
+├── start_all.bat    launcher (Windows), one window per device
+└── start_panel.bat  launcher (Windows), single-window mode
 ```
 
 ---

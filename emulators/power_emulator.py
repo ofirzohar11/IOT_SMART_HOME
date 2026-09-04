@@ -16,19 +16,21 @@ from ui.qt_env import ensure_qt_plugin_path
 ensure_qt_plugin_path()
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QProgressBar,
-                             QPushButton, QVBoxLayout)
+from PyQt5.QtWidgets import (QHBoxLayout, QLabel, QProgressBar, QPushButton,
+                             QVBoxLayout)
 
 from config import mqtt_init as cfg
 from emulators import ui_common as ui
-from emulators.ui_common import EmulatorWindow
+from emulators.ui_common import EmulatorPanel, run_panel
 
 PUBLISH_MS = 3000
-DRAIN_PER_TICK = 1.5    # percent of battery lost per publish while on battery
+DRAIN_PER_TICK = 1.5     # percent of battery lost per publish while on battery
 RECHARGE_PER_TICK = 0.8  # percent regained per publish while on mains
 
+GEOMETRY = (440, 420, 340, 300)
 
-class PowerWindow(EmulatorWindow):
+
+class PowerSensorPanel(EmulatorPanel):
 
     def __init__(self):
         super().__init__(
@@ -36,13 +38,13 @@ class PowerWindow(EmulatorWindow):
             title='🔌  Power Supply Sensor',
             subtitle='Mains / battery source and charge level',
             topic_note='pub: %s (retained)' % cfg.TOPIC_POWER,
-            geometry=(440, 420, 340, 300),
         )
+        self.setMinimumWidth(300)
 
         self.source = 'MAINS'
         self.battery = 100.0
 
-        panel = ui.make_panel()
+        panel = ui.make_subpanel()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -57,7 +59,6 @@ class PowerWindow(EmulatorWindow):
 
         self.toggleBtn = QPushButton('SIMULATE POWER CUT')
         self.toggleBtn.setFixedHeight(42)
-        self.toggleBtn.setStyleSheet(ui.button_style(ui.WARN))
         self.toggleBtn.clicked.connect(self.toggle)
 
         row = QHBoxLayout()
@@ -108,8 +109,9 @@ class PowerWindow(EmulatorWindow):
         color = ui.OK if on_mains else ui.WARN
         self.sourceLabel.setText('POWER: ' + self.source)
         self.sourceLabel.setStyleSheet(
-            'color: %s; border: 2px solid %s; border-radius: 10px; font-family: %s; '
-            'font-size: 20px; font-weight: bold; padding: 14px;' % (color, color, ui.FONT))
+            'color: %s; background: transparent; border: 2px solid %s; '
+            'border-radius: 10px; font-family: %s; font-size: 19px; '
+            'font-weight: bold; padding: 13px;' % (color, color, ui.FONT))
         self.toggleBtn.setText('RESTORE MAINS' if not on_mains else 'SIMULATE POWER CUT')
         self.toggleBtn.setStyleSheet(ui.button_style(ui.OK if not on_mains else ui.WARN))
 
@@ -134,7 +136,4 @@ class PowerWindow(EmulatorWindow):
 
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = PowerWindow()
-    window.show()
-    sys.exit(app.exec_())
+    run_panel(PowerSensorPanel, GEOMETRY)

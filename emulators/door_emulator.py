@@ -18,17 +18,18 @@ ensure_qt_plugin_path()
 import time
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QLabel, QPushButton,
-                             QVBoxLayout)
+from PyQt5.QtWidgets import QCheckBox, QLabel, QPushButton, QVBoxLayout
 
 from config import mqtt_init as cfg
 from emulators import ui_common as ui
-from emulators.ui_common import EmulatorWindow
+from emulators.ui_common import EmulatorPanel, run_panel
 
 AUTO_CLOSE_SECONDS = 10
 
+GEOMETRY = (440, 60, 340, 330)
 
-class DoorWindow(EmulatorWindow):
+
+class DoorSensorPanel(EmulatorPanel):
 
     def __init__(self):
         super().__init__(
@@ -36,13 +37,13 @@ class DoorWindow(EmulatorWindow):
             title='🚪  Door Sensor',
             subtitle='Reed switch - retained OPEN / CLOSED state',
             topic_note='pub: %s (retained)' % cfg.TOPIC_DOOR,
-            geometry=(440, 60, 340, 330),
         )
+        self.setMinimumWidth(300)
 
         self.is_open = False
         self.opened_at = None
 
-        panel = ui.make_panel()
+        panel = ui.make_subpanel()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -51,7 +52,7 @@ class DoorWindow(EmulatorWindow):
         self.stateLabel.setAlignment(Qt.AlignCenter)
 
         self.toggleBtn = QPushButton()
-        self.toggleBtn.setFixedHeight(46)
+        self.toggleBtn.setFixedHeight(44)
         self.toggleBtn.clicked.connect(self.toggle)
 
         self.timerLabel = ui.label('closed', size=12, color=ui.TEXT_DIM,
@@ -60,8 +61,8 @@ class DoorWindow(EmulatorWindow):
         self.autoCloseCheck = QCheckBox('Close automatically after %d s'
                                         % AUTO_CLOSE_SECONDS)
         self.autoCloseCheck.setStyleSheet(
-            'QCheckBox { color: %s; font-family: %s; font-size: 12px; }'
-            % (ui.TEXT, ui.FONT))
+            'QCheckBox { color: %s; font-family: %s; font-size: 12px; '
+            'background: transparent; border: none; }' % (ui.TEXT, ui.FONT))
 
         layout.addWidget(self.stateLabel)
         layout.addWidget(self.toggleBtn)
@@ -110,9 +111,9 @@ class DoorWindow(EmulatorWindow):
         if self.is_open:
             self.stateLabel.setText('DOOR OPEN')
             self.stateLabel.setStyleSheet(
-                'color: #0B1220; background-color: %s; border-radius: 10px; '
-                'font-family: %s; font-size: 22px; font-weight: bold; padding: 18px;'
-                % (ui.WARN, ui.FONT))
+                'color: #0B1220; background-color: %s; border: none; '
+                'border-radius: 10px; font-family: %s; font-size: 21px; '
+                'font-weight: bold; padding: 16px;' % (ui.WARN, ui.FONT))
             self.toggleBtn.setText('CLOSE DOOR')
             self.toggleBtn.setStyleSheet(ui.button_style(ui.OK))
             self.timerLabel.setText('open for 0 s')
@@ -120,18 +121,15 @@ class DoorWindow(EmulatorWindow):
             self.stateLabel.setText('DOOR CLOSED')
             self.stateLabel.setStyleSheet(
                 'color: %s; background-color: transparent; border: 2px solid %s; '
-                'border-radius: 10px; font-family: %s; font-size: 22px; '
-                'font-weight: bold; padding: 16px;' % (ui.OK, ui.OK, ui.FONT))
+                'border-radius: 10px; font-family: %s; font-size: 21px; '
+                'font-weight: bold; padding: 14px;' % (ui.OK, ui.OK, ui.FONT))
             self.toggleBtn.setText('OPEN DOOR')
             self.toggleBtn.setStyleSheet(ui.button_style(ui.WARN))
             self.timerLabel.setText('closed')
-            self.timerLabel.setStyleSheet(
-                'color: %s; font-family: %s; font-size: 12px; background: transparent; '
-                'border: none;' % (ui.TEXT_DIM, ui.FONT))
+        self.timerLabel.setStyleSheet(
+            'color: %s; font-family: %s; font-size: 12px; background: transparent; '
+            'border: none;' % (ui.TEXT_DIM, ui.FONT))
 
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = DoorWindow()
-    window.show()
-    sys.exit(app.exec_())
+    run_panel(DoorSensorPanel, GEOMETRY)

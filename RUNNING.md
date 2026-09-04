@@ -74,6 +74,15 @@ Verify:
 
 ## 3. Starting everything
 
+There are two layouts. They run identical device code and open identical MQTT
+connections — six clients with six distinct client ids either way. Only the
+number of windows differs.
+
+| Mode | Processes | Windows | Best for |
+|---|---|---|---|
+| Separate | 8 | 8 | Showing the architecture — one process per device, like real hardware |
+| Device panel | 3 | 2 | Demonstrating and recording |
+
 ### macOS / Linux
 
 Make the launcher executable once:
@@ -82,10 +91,16 @@ Make the launcher executable once:
 chmod +x start_all.sh
 ```
 
-Then start all eight processes:
+**One window per device** (eight processes):
 
 ```bash
 PYTHON="$PWD/.venv/bin/python" ./start_all.sh
+```
+
+**All devices in one window** (three processes):
+
+```bash
+PYTHON="$PWD/.venv/bin/python" ./start_all.sh --panel
 ```
 
 `Ctrl-C` in that terminal stops every component.
@@ -95,13 +110,29 @@ PYTHON="$PWD/.venv/bin/python" ./start_all.sh
 
 ### Windows
 
-Double-click `start_all.bat`, or from a command prompt:
+Double-click `start_all.bat` for one window per device, or `start_panel.bat` for
+the single-window layout. From a command prompt:
 
 ```
 start_all.bat
 ```
 
+```
+start_panel.bat
+```
+
 Each component opens in its own console window; close them to stop.
+
+### Which one to record
+
+Use `--panel`. Two windows — the device panel and the main GUI — fit side by
+side on one screen, so every control you press and its effect on the dashboard
+are visible in the same frame.
+
+![Device panel](docs/screenshots/08_device_panel.png)
+
+Show the eight-process mode briefly when you explain the architecture, so it is
+clear the devices really are independent clients rather than one program.
 
 ### Starting one component at a time
 
@@ -118,6 +149,12 @@ refresh let any component join late.
 .venv/bin/python emulators/compressor_emulator.py
 .venv/bin/python emulators/fan_emulator.py
 .venv/bin/python emulators/siren_emulator.py
+```
+
+Or all six devices in one window:
+
+```bash
+.venv/bin/python emulators/device_panel.py
 ```
 
 ---
@@ -373,7 +410,8 @@ rm database/coldchain.db*
 | Task | Command (macOS / Linux) |
 |---|---|
 | Install | `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
-| Start everything | `PYTHON="$PWD/.venv/bin/python" ./start_all.sh` |
+| Start everything, 8 windows | `PYTHON="$PWD/.venv/bin/python" ./start_all.sh` |
+| Start everything, 1 device window | `PYTHON="$PWD/.venv/bin/python" ./start_all.sh --panel` |
 | Start one component | `.venv/bin/python gui/main_gui.py` |
 | Stop everything | `Ctrl-C`, or `pkill -f "data_manager.py"` |
 | Clear the database | `rm database/coldchain.db*` |

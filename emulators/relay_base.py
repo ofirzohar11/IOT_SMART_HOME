@@ -7,54 +7,54 @@ Only the name, the topics and the colour differ, so the behaviour lives here and
 each actuator file is a thin entry point.
 """
 
-import sys
 from datetime import datetime
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
 
 from emulators import ui_common as ui
-from emulators.ui_common import EmulatorWindow
+from emulators.ui_common import EmulatorPanel, run_panel
 
 
-class RelayEmulator(EmulatorWindow):
+class RelayPanel(EmulatorPanel):
 
-    def __init__(self, role, name, icon, cmd_topic, sts_topic, on_color, geometry):
+    def __init__(self, role, name, icon, cmd_topic, sts_topic, on_color):
         super().__init__(
             role=role,
             title='%s  %s' % (icon, name),
             subtitle='Relay actuator - driven by the data manager',
             topic_note='sub: %s\npub: %s' % (cmd_topic, sts_topic),
-            geometry=geometry,
         )
+        self.setMinimumWidth(280)
+
         self.name = name
         self.cmd_topic = cmd_topic
         self.sts_topic = sts_topic
         self.on_color = on_color
         self.state = 'OFF'
+        self.switch_count = 0
 
-        panel = ui.make_panel()
+        panel = ui.make_subpanel()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(16, 18, 16, 18)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        self.stateLabel = QLabel('OFF')
+        self.stateLabel = QLabel()
         self.stateLabel.setAlignment(Qt.AlignCenter)
         self._paint_state()
 
         self.lastCmdLabel = ui.label('waiting for first command...', size=11,
                                      color=ui.TEXT_DIM, align=Qt.AlignCenter)
 
-        layout.addWidget(self.stateLabel)
-        layout.addWidget(self.lastCmdLabel)
-
         counters = QHBoxLayout()
         self.switchCountLabel = ui.label('switch cycles: 0', size=11, color=ui.TEXT_DIM)
         counters.addWidget(self.switchCountLabel)
         counters.addStretch()
+
+        layout.addWidget(self.stateLabel)
+        layout.addWidget(self.lastCmdLabel)
         layout.addLayout(counters)
 
-        self.switch_count = 0
         self.body.addWidget(panel)
 
         self.mqtt.subscribe(self.cmd_topic)
@@ -65,8 +65,9 @@ class RelayEmulator(EmulatorWindow):
         color = self.on_color if is_on else ui.OFF
         self.stateLabel.setText(self.name.upper() + ':  ' + self.state)
         self.stateLabel.setStyleSheet(
-            'color: %s; background-color: %s; border: 2px solid %s; border-radius: 10px; '
-            'font-family: %s; font-size: 22px; font-weight: bold; padding: 18px 8px;'
+            'color: %s; background-color: %s; border: 2px solid %s; '
+            'border-radius: 10px; font-family: %s; font-size: 20px; '
+            'font-weight: bold; padding: 16px 8px;'
             % ('#0B1220' if is_on else ui.TEXT_DIM,
                color if is_on else 'transparent',
                color, ui.FONT))
@@ -83,8 +84,8 @@ class RelayEmulator(EmulatorWindow):
             print('[%s] ignoring unknown command: %r' % (self.role, payload))
             return
 
-        stamp = datetime.now().strftime('%H:%M:%S')
-        self.lastCmdLabel.setText('last command: %s at %s' % (command, stamp))
+        self.lastCmdLabel.setText('last command: %s at %s'
+                                  % (command, datetime.now().strftime('%H:%M:%S')))
 
         if command == self.state:
             return  # already in that state, nothing to switch
@@ -98,7 +99,6 @@ class RelayEmulator(EmulatorWindow):
 
 
 def run_relay(role, name, icon, cmd_topic, sts_topic, on_color, geometry):
-    app = QApplication(sys.argv)
-    window = RelayEmulator(role, name, icon, cmd_topic, sts_topic, on_color, geometry)
-    window.show()
-    sys.exit(app.exec_())
+    """Entry point for the single-relay emulator scripts."""
+    run_panel(lambda: RelayPanel(role, name, icon, cmd_topic, sts_topic, on_color),
+              geometry)

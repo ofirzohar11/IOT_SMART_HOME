@@ -58,6 +58,15 @@ def make_panel(border_color=BORDER, background=PANEL):
     return frame
 
 
+def make_subpanel():
+    """A section inside a card. Borderless, so nested cards do not stack outlines."""
+    frame = QFrame()
+    frame.setObjectName('subpanel')
+    frame.setStyleSheet('QFrame#subpanel { background-color: %s; border: none; '
+                        'border-radius: 10px; }' % PANEL_ALT)
+    return frame
+
+
 def label(text, size=13, color=TEXT, bold=False,
           align=Qt.AlignLeft | Qt.AlignVCenter):
     item = QLabel(text)
