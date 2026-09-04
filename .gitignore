@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# SQLite database is generated at runtime
+*.db
+*.db-shm
+*.db-wal
+
+# Exports
+*.csv
+
+.DS_Store
+.idea/
+.vscode/
