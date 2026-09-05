@@ -30,11 +30,13 @@ from PyQt5.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout,
 from config import mqtt_init as cfg
 from config.mqtt_client import QOS_COMMAND, MqttClient, parse_json
 from database import db
+from gui import glossary
 from gui.pages.dashboard import DashboardPage
 from gui.pages.devices import DevicesPage
 from gui.pages.history import HistoryPage
 from gui.pages.incidents import IncidentsPage
 from gui.pages.simulations import SimulationsPage
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
@@ -48,11 +50,20 @@ STATUS_STALE_SECONDS = 8
 ALERT_TOAST_INTERVAL_S = 3.5
 
 NAV_ITEMS = [
-    ('Dashboard', '◈', DashboardPage),
-    ('Devices', '◉', DevicesPage),
-    ('Incidents', '⚑', IncidentsPage),
-    ('Simulations', '⚗', SimulationsPage),
-    ('History', '▤', HistoryPage),
+    ('Dashboard', '◈', DashboardPage,
+     'Is the fridge safe right now? Live temperature, equipment and anything '
+     'that needs attention.'),
+    ('Devices', '◉', DevicesPage,
+     'Every sensor and switch in the unit: what it is for, and whether it is '
+     'still reporting.'),
+    ('Incidents', '⚑', IncidentsPage,
+     'Problems the system has opened a case for, each with what to do about '
+     'it.'),
+    ('Simulations', '⚗', SimulationsPage,
+     'Break something on purpose to prove the alarms really work. Everything '
+     'it causes is labelled SIMULATED.'),
+    ('History', '▤', HistoryPage,
+     'The stored record: every reading and every alert, ready to export.'),
 ]
 
 
@@ -111,7 +122,7 @@ class MainWindow(QWidget):
 
         self.stack = QStackedWidget()
         self.pages = []
-        for index, (title, glyph, page_class) in enumerate(NAV_ITEMS):
+        for index, (title, glyph, page_class, _tip) in enumerate(NAV_ITEMS):
             page = page_class(self)
             self.pages.append(page)
             self.stack.addWidget(page)
@@ -164,8 +175,9 @@ class MainWindow(QWidget):
 
         self.navGroup = QButtonGroup(self)
         self.navGroup.setExclusive(True)
-        for index, (title, glyph, _cls) in enumerate(NAV_ITEMS):
+        for index, (title, glyph, _cls, tip) in enumerate(NAV_ITEMS):
             button = NavButton(title, glyph)
+            h.set_help(button, title, tip)
             button.clicked.connect(lambda _c, i=index: self._select(i))
             self.navGroup.addButton(button, index)
             layout.addWidget(button)
@@ -173,9 +185,21 @@ class MainWindow(QWidget):
         layout.addStretch()
         self.navAlertLabel = t.label('', size=10, color=t.TEXT_MUTED)
         self.navAlertLabel.setWordWrap(True)
+        h.set_help(self.navAlertLabel, 'Open conditions',
+                   'How many critical problems and warnings are active right '
+                   'now, wherever you are in the console.',
+                   'It follows you from page to page, so a problem raised '
+                   'while you are reading the history is not missed.',
+                   'No active alerts.')
         layout.addWidget(self.navAlertLabel)
-        layout.addWidget(t.label('broker\n%s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
-                                 size=9, color=t.TEXT_MUTED))
+        brokerLabel = t.label('broker\n%s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
+                              size=9, color=t.TEXT_MUTED)
+        h.set_help(brokerLabel, 'Message broker',
+                   'The server every device and this console connect to in '
+                   'order to exchange messages.',
+                   'Nothing on this screen updates without it. If the '
+                   'connection indicator turns red, this is what it lost.')
+        layout.addWidget(brokerLabel)
         return rail
 
     def _build_topbar(self):
@@ -198,14 +222,19 @@ class MainWindow(QWidget):
         row.addStretch()
 
         self.simPill = w.Pill('', t.SIM, filled=False, size=11)
+        glossary.term('simulated').apply(
+            self.simPill, 'Simulated faults are armed',
+            note='Clear them from the Simulations page when the drill is over.')
         self.simPill.hide()
         row.addWidget(self.simPill)
 
         self.linkPill = w.Pill('CONNECTING', t.OFF, filled=False, size=11)
+        glossary.term('connection').apply(self.linkPill)
         row.addWidget(self.linkPill)
 
         self.modeButton = QPushButton('Enter maintenance')
         self.modeButton.setStyleSheet(t.outline_button_style(t.TEXT_DIM))
+        glossary.term('maintenance').apply(self.modeButton)
         self.modeButton.clicked.connect(self._toggle_mode)
         row.addWidget(self.modeButton)
         return bar
@@ -417,6 +446,9 @@ def main():
     db.init_db()
     app = QApplication(sys.argv)
     app.setApplicationName('Cold Chain Monitor')
+    # Explanations are part of this interface, so they are styled like the rest
+    # of it rather than left as the platform's yellow rectangle.
+    app.setStyleSheet(t.TOOLTIP_STYLE)
 
     def handle_exception(kind, value, tb):
         """Never let one widget bug close the console silently."""

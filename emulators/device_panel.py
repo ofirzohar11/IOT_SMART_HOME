@@ -116,6 +116,7 @@ class DevicePanelWindow(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setStyleSheet(t.TOOLTIP_STYLE)
     window = DevicePanelWindow()
     window.show()
     sys.exit(app.exec_())

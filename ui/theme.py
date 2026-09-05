@@ -194,6 +194,18 @@ def pill_style(color, filled=True, size=11):
             'font-weight: 600; padding: 3px 9px;' % (color, color, RADIUS_SM, FONT, size))
 
 
+# Explanations are a first-class part of this interface, so the tooltip they
+# arrive in is styled like a small card rather than left as the platform's
+# yellow rectangle. Applied once to the QApplication, it reaches every window.
+TOOLTIP_STYLE = '''
+    QToolTip {
+        background-color: %s; color: %s; border: 1px solid %s;
+        border-radius: %dpx; padding: 9px 12px;
+        font-family: %s; font-size: 12px; opacity: 255;
+    }
+''' % (PANEL_ALT, TEXT, BORDER_STRONG, RADIUS, FONT)
+
+
 SCROLLBAR = '''
     QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
     QScrollBar::handle:vertical { background: %s; border-radius: 5px; min-height: 32px; }

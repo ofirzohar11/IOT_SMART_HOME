@@ -9,9 +9,10 @@ screens looking like one product.
 from PyQt5.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
                           pyqtSignal)
 from PyQt5.QtWidgets import (QDialog, QFrame, QGraphicsOpacityEffect,
-                             QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                             QWidget)
+                             QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+                             QVBoxLayout, QWidget)
 
+from ui import help as h
 from ui import theme as t
 
 
@@ -54,7 +55,8 @@ def clear_layout(layout, keep=()):
 class Card(QFrame):
     """A titled panel. ``body`` is the layout subclasses and pages fill."""
 
-    def __init__(self, title=None, subtitle=None, actions=None, padding=16):
+    def __init__(self, title=None, subtitle=None, actions=None, padding=16,
+                 help=None):
         super().__init__()
         self.setObjectName('panel')
         self.setStyleSheet(t.panel_style())
@@ -69,9 +71,29 @@ class Card(QFrame):
             self.headerRow.setSpacing(10)
             titles = QVBoxLayout()
             titles.setSpacing(2)
-            titles.addWidget(t.caption(title))
+            # The heading lives in its own widget so the info dot stays beside
+            # the words rather than being pushed to the far side of the card.
+            heading = QWidget()
+            heading.setStyleSheet('background: transparent;')
+            # Fixed vertically: a heading that can grow steals the slack in a
+            # stretched card and pushes the subtitle to the bottom of it.
+            heading.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+            headingRow = QHBoxLayout(heading)
+            headingRow.setContentsMargins(0, 0, 0, 0)
+            headingRow.setSpacing(6)
+            headingRow.addWidget(t.caption(title))
+            if help is not None:
+                headingRow.addWidget(help.dot(size=12) if hasattr(help, 'dot')
+                                     else h.InfoDot(help, size=12))
+            titles.addWidget(heading)
             if subtitle:
-                titles.addWidget(t.label(subtitle, size=11, color=t.TEXT_MUTED))
+                # Deliberately not wrapped: a wrapped label reports a narrow
+                # size hint, which squeezes the whole heading into a column.
+                # Fixed height, or a card with a short body hands its slack to
+                # the subtitle and leaves it floating in mid-air.
+                note = t.label(subtitle, size=11, color=t.TEXT_MUTED)
+                note.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+                titles.addWidget(note)
             self.headerRow.addLayout(titles)
             self.headerRow.addStretch()
             for widget in (actions or []):
@@ -94,12 +116,15 @@ class Card(QFrame):
 class SectionTitle(QWidget):
     """A heading with an optional count badge, used between blocks on a page."""
 
-    def __init__(self, text, note=None):
+    def __init__(self, text, note=None, help=None):
         super().__init__()
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 4, 2, 0)
-        row.setSpacing(9)
+        row.setSpacing(7)
         row.addWidget(t.caption(text))
+        if help is not None:
+            row.addWidget(help.dot(size=12) if hasattr(help, 'dot')
+                          else h.InfoDot(help, size=12))
         self.noteLabel = t.label(note or '', size=11, color=t.TEXT_MUTED)
         row.addWidget(self.noteLabel)
         row.addStretch()
@@ -150,7 +175,7 @@ class StatTile(QFrame):
     """A caption with one number or short phrase above it."""
 
     def __init__(self, caption_text, value_size=21, wrap=False, mono=True,
-                 minimum_width=118):
+                 minimum_width=118, help=None):
         super().__init__()
         self.value_size = value_size
         self.mono = mono
@@ -166,6 +191,10 @@ class StatTile(QFrame):
         self.captionLabel = t.caption(caption_text, color=t.TEXT_MUTED)
         layout.addWidget(self.valueLabel)
         layout.addWidget(self.captionLabel)
+        if help is not None:
+            # A tile is a number with a two-word caption: the tooltip is where
+            # the rest of the sentence lives.
+            self.setToolTip(help.tooltip() if hasattr(help, 'tooltip') else help)
 
     def set_value(self, text, color=t.TEXT):
         self.valueLabel.setText(str(text))
@@ -375,7 +404,7 @@ class SegmentedControl(QWidget):
 
     changed = pyqtSignal(object)
 
-    def __init__(self, options, current=None):
+    def __init__(self, options, current=None, tips=None):
         super().__init__()
         self._buttons = {}
         self._value = current if current is not None else options[0][1]
@@ -388,6 +417,7 @@ class SegmentedControl(QWidget):
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(lambda _c, v=value: self.set_value(v))
+            h.set_tip(button, (tips or {}).get(value, 'Show the last %s.' % text))
             self._buttons[value] = button
             row.addWidget(button)
         self._paint()
@@ -431,6 +461,10 @@ class ToggleRow(QFrame):
         self.danger = danger
         self._active = False
         self.setObjectName('toggleRow')
+        # Fixed height: a card with few faults would otherwise share its spare
+        # room out among its rows and leave them looking stretched next to a
+        # card with many.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._paint_frame()
 
         row = QHBoxLayout(self)
@@ -444,6 +478,11 @@ class ToggleRow(QFrame):
         note = t.label(description, size=10, color=t.TEXT_MUTED)
         note.setWordWrap(True)
         text.addWidget(note)
+        h.set_help(self, title, description,
+                   'Arming this changes what the emulated device really does, so '
+                   'the alarm that follows travels the same path a genuine '
+                   'failure would.',
+                   note='Everything it causes is recorded as SIMULATED.')
         row.addLayout(text, stretch=1)
 
         self.button = QPushButton('Arm')

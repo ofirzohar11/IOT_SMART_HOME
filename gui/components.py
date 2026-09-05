@@ -9,7 +9,9 @@ from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
 from config import devices as registry
 from config import mqtt_init as cfg
 from database import db
+from gui import glossary
 from gui.charts import Sparkline
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
@@ -74,47 +76,85 @@ class MetricTile(w.StatTile):
 class ActuatorCard(QFrame):
     """An actuator's commanded state beside an independent measurement of it.
 
-    The pill is what the relay reported; the line underneath is what a separate
-    sensor measured. When those disagree the card says so - which is the whole
-    reason the current clamp and the tachometer exist.
+    The left half is what the system *told* the equipment to do; the right half
+    is what a separate sensor says it is *really* doing. Labelling the two
+    halves is the whole point of the card: a relay that reports ON proves
+    nothing, and this is where a normal user can see the difference.
     """
 
     def __init__(self, device_id, on_color, measured=True):
-        super().__init__()
         self.device = registry.get(device_id)
+        self.help = glossary.device(device_id)
+        super().__init__()
         self.on_color = on_color
         self.setObjectName('panel')
-        self.setMinimumHeight(126)
+        self.setMinimumHeight(152)
         self._paint_border(t.BORDER)
+        if self.help:
+            self.help.apply(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 11, 12, 11)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
 
         head = QHBoxLayout()
-        head.setSpacing(8)
-        head.addWidget(t.label(self.device.icon, size=17))
-        head.addWidget(t.caption(self.device.label.replace(' Relay', '')))
+        head.setSpacing(7)
+        head.addWidget(t.label(self.device.icon, size=16))
+        name = self.help.name if self.help else self.device.label
+        head.addWidget(t.caption(name))
+        if self.help:
+            head.addWidget(self.help.dot(size=11))
         head.addStretch()
         self.healthPill = w.HealthPill('OFFLINE')
+        h.set_help(self.healthPill, 'Device health',
+                   'How well this device is reporting to the system.',
+                   glossary.term('health').why,
+                   'Connected.')
         head.addWidget(self.healthPill)
         layout.addLayout(head)
 
+        columns = QHBoxLayout()
+        columns.setSpacing(10)
+
+        commanded = QVBoxLayout()
+        commanded.setSpacing(3)
+        commandedCaption = t.caption('Told to', color=t.TEXT_MUTED)
+        glossary.term('commanded').apply(commandedCaption, 'Told to')
+        commanded.addWidget(commandedCaption)
         self.stateLabel = QLabel('OFF')
         self.stateLabel.setAlignment(Qt.AlignCenter)
         self.stateLabel.setFixedHeight(30)
         self._paint_state(False)
-        layout.addWidget(self.stateLabel)
+        commanded.addWidget(self.stateLabel)
+        commanded.addStretch()
+        columns.addLayout(commanded, stretch=1)
 
         self.measuredLabel = None
         if measured:
-            self.measuredLabel = t.label('--', size=13, color=t.TEXT_MUTED,
+            measuredColumn = QVBoxLayout()
+            measuredColumn.setSpacing(3)
+            measuredCaption = t.caption('Really doing', color=t.TEXT_MUTED)
+            glossary.term('measured').apply(measuredCaption, 'Really doing')
+            measuredColumn.addWidget(measuredCaption)
+            self.measuredLabel = t.label('--', size=15, color=t.TEXT_MUTED,
                                          bold=True, mono=True,
-                                         align=Qt.AlignCenter)
-            layout.addWidget(self.measuredLabel)
-            self.captionLabel = t.label('', size=9, color=t.TEXT_MUTED,
-                                        align=Qt.AlignCenter)
-            layout.addWidget(self.captionLabel)
+                                         align=Qt.AlignLeft | Qt.AlignVCenter)
+            self.measuredLabel.setFixedHeight(30)
+            measuredColumn.addWidget(self.measuredLabel)
+            self.captionLabel = t.label('', size=9, color=t.TEXT_MUTED)
+            self.captionLabel.setWordWrap(True)
+            measuredColumn.addWidget(self.captionLabel)
+            measuredColumn.addStretch()
+            columns.addLayout(measuredColumn, stretch=1)
+        layout.addLayout(columns)
+
+        if not measured:
+            # Saying so out loud is honest, and it explains why the other two
+            # cards carry a second number and this one does not.
+            note = t.label('No separate sensor - the sounder cannot confirm '
+                           'itself.', size=9, color=t.TEXT_MUTED)
+            note.setWordWrap(True)
+            layout.addWidget(note)
         layout.addStretch()
 
     def _paint_border(self, color):
@@ -135,42 +175,70 @@ class ActuatorCard(QFrame):
 
     def set_health(self, health):
         self.healthPill.set_health(health)
+        entry = glossary.health(health)
+        if entry:
+            entry.apply(self.healthPill)
 
     def set_measurement(self, text, color=t.TEXT_MUTED, caption=''):
         if self.measuredLabel is None:
             return
         self.measuredLabel.setText(text)
         self.measuredLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 13px; font-weight: 600; '
+            'color: %s; font-family: %s; font-size: 15px; font-weight: 600; '
             'background: transparent; border: none;' % (color, t.FONT_MONO))
         self.captionLabel.setText(caption)
+        self.captionLabel.setStyleSheet(
+            'color: %s; font-family: %s; font-size: 9px; background: transparent; '
+            'border: none;' % (color if color == t.CRITICAL else t.TEXT_MUTED,
+                               t.FONT))
 
 
 # ===========================================================================
 class DeviceCard(QFrame):
-    """A device on the Devices page: identity, health, freshness, last value."""
+    """A device on the Devices page: what it is for, how it is, what it says.
+
+    The plain-language purpose is the headline and the engineering identity sits
+    underneath it, so somebody who has never met the word "tachometer" can still
+    tell at a glance which box has stopped talking.
+    """
 
     def __init__(self, device):
         super().__init__()
         self.device = device
+        self.help = glossary.device(device.id)
         self.setObjectName('panel')
         self._paint_border(t.BORDER)
-        self.setMinimumHeight(158)
+        self.setMinimumHeight(176)
+
+        topic = device.telemetry_topic or device.sts_topic or ''
+        if self.help:
+            self.help.apply(self, note='%s   ·   %s'
+                            % (self.help.note, topic.replace(cfg.TOPIC_ROOT, '…')))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(7)
+        layout.setSpacing(6)
 
         head = QHBoxLayout()
         head.setSpacing(9)
-        head.addWidget(t.label(device.icon, size=17))
+        head.addWidget(t.label(device.icon, size=17), alignment=Qt.AlignTop)
         titles = QVBoxLayout()
         titles.setSpacing(1)
-        titles.addWidget(t.label(device.label, size=12, bold=True))
-        titles.addWidget(t.label('%s · %s' % (device.kind.title(), device.group),
-                                 size=10, color=t.TEXT_MUTED))
-        head.addLayout(titles)
-        head.addStretch()
+        nameRow = QHBoxLayout()
+        nameRow.setSpacing(5)
+        nameRow.addWidget(t.label(self.help.name if self.help else device.label,
+                                  size=12, bold=True))
+        if self.help:
+            nameRow.addWidget(self.help.dot(size=11))
+        nameRow.addStretch()
+        titles.addLayout(nameRow)
+        # The technical identity is kept, one step down the hierarchy.
+        identity = t.label('%s · %s · %s' % (device.label, device.kind.title(),
+                                             device.group),
+                           size=10, color=t.TEXT_MUTED)
+        identity.setWordWrap(True)
+        titles.addWidget(identity)
+        head.addLayout(titles, stretch=1)
         self.healthPill = w.HealthPill('OFFLINE')
         head.addWidget(self.healthPill, alignment=Qt.AlignTop)
         layout.addLayout(head)
@@ -178,23 +246,35 @@ class DeviceCard(QFrame):
         self.valueLabel = t.label('--', size=19, bold=True, mono=True)
         layout.addWidget(self.valueLabel)
 
+        # Only devices whose reading is a number get a trend line; for a door
+        # or a relay the strip would be a permanently empty box.
         self.spark = Sparkline(t.ACCENT, height=30)
+        h.set_tip(self.spark, 'The last few minutes of this reading.')
+        self.spark.hide()
         layout.addWidget(self.spark)
+
+        if self.help and self.help.normal:
+            expected = t.label('Normal: ' + self.help.normal, size=10,
+                               color=t.TEXT_DIM)
+            expected.setWordWrap(True)
+            layout.addWidget(expected)
 
         self.freshnessLabel = t.label('no telemetry yet', size=10,
                                       color=t.TEXT_MUTED)
+        h.set_help(self.freshnessLabel, 'Freshness',
+                   'How long ago this device last sent a reading.',
+                   'A device that has gone quiet is not a device that is fine - '
+                   'whatever it was checking is no longer being checked.',
+                   'A few seconds ago.')
         layout.addWidget(self.freshnessLabel)
 
         self.faultLabel = t.label('', size=10, color=t.SIM)
         self.faultLabel.setWordWrap(True)
+        h.set_help(self.faultLabel, 'Simulated fault armed',
+                   glossary.term('simulated').what,
+                   glossary.term('simulated').why)
         self.faultLabel.hide()
         layout.addWidget(self.faultLabel)
-
-        topic = device.telemetry_topic or device.sts_topic or ''
-        note = t.label(topic.replace(cfg.TOPIC_ROOT, '…'), size=9,
-                       color=t.TEXT_MUTED)
-        note.setWordWrap(True)
-        layout.addWidget(note)
         layout.addStretch()
 
     def _paint_border(self, color):
@@ -203,6 +283,9 @@ class DeviceCard(QFrame):
 
     def update_state(self, health, value_text, age_seconds, faults):
         self.healthPill.set_health(health)
+        entry = glossary.health(health)
+        if entry:
+            entry.apply(self.healthPill)
         self._paint_border(t.health_color(health)
                            if health in ('FAULT', 'DEGRADED') else t.BORDER)
         self.valueLabel.setText(value_text)
@@ -212,11 +295,11 @@ class DeviceCard(QFrame):
             % (t.TEXT if health != 'OFFLINE' else t.TEXT_MUTED, t.FONT_MONO))
 
         if health == 'OFFLINE':
-            self.freshnessLabel.setText('offline · last seen %s'
+            self.freshnessLabel.setText('Not reporting · last seen %s'
                                         % humanise_age(age_seconds))
             color = t.CRITICAL
         else:
-            self.freshnessLabel.setText('updated %s' % humanise_age(age_seconds))
+            self.freshnessLabel.setText('Updated %s' % humanise_age(age_seconds))
             color = t.TEXT_MUTED
         self.freshnessLabel.setStyleSheet(
             'color: %s; font-family: %s; font-size: 10px; background: transparent; '
@@ -227,7 +310,7 @@ class DeviceCard(QFrame):
             for fault_id in faults:
                 fault = self.device.fault(fault_id)
                 labels.append(fault.label if fault else fault_id)
-            self.faultLabel.setText('SIMULATED: ' + ', '.join(labels))
+            self.faultLabel.setText('SIMULATED FAULT: ' + ', '.join(labels))
             self.faultLabel.show()
         else:
             self.faultLabel.hide()
@@ -237,7 +320,7 @@ class DeviceCard(QFrame):
 class EventFeed(QFrame):
     """The rolling Info / Warning / Critical log."""
 
-    def __init__(self, title='EVENT LOG', compact=False):
+    def __init__(self, title='Recent activity', compact=False):
         super().__init__()
         self.compact = compact
         self.count = 0
@@ -249,11 +332,24 @@ class EventFeed(QFrame):
         outer.setSpacing(9)
 
         header = QHBoxLayout()
+        header.setSpacing(6)
         header.addWidget(t.caption(title))
+        header.addWidget(h.dot(
+            'Recent activity',
+            'Everything the monitoring rules have reported since this window '
+            'was opened, newest at the bottom.',
+            'It is the running commentary behind the incidents: it shows '
+            'conditions clearing as well as appearing, which a list of open '
+            'incidents cannot.',
+            note='Clearing the list only empties this panel. Nothing is '
+                 'deleted - the full record stays on the History page.',
+            size=12))
         header.addStretch()
         self.counterLabel = t.label('0 events', size=10, color=t.TEXT_MUTED)
         clearBtn = QPushButton('Clear')
         clearBtn.setStyleSheet(t.ghost_button_style())
+        h.set_tip(clearBtn, 'Empty this panel. The stored record is not '
+                            'affected - see the History page.')
         clearBtn.clicked.connect(self.clear)
         header.addWidget(self.counterLabel)
         header.addWidget(clearBtn)
@@ -273,8 +369,9 @@ class EventFeed(QFrame):
         self.items.addStretch()
         self.scroll.setWidget(self.container)
 
-        self.empty = w.EmptyState('◔', 'No events yet',
-                                  'Alerts appear here as conditions change.')
+        self.empty = w.EmptyState(
+            '◔', 'Nothing has happened yet',
+            'Warnings and alarms appear here the moment a condition changes.')
         outer.addWidget(self.empty)
         outer.addWidget(self.scroll, stretch=1)
         self.scroll.hide()
@@ -304,6 +401,9 @@ class EventFeed(QFrame):
             text += '  ·  %s' % operator
         messageLabel = t.label(text, size=11)
         messageLabel.setWordWrap(True)
+        explain = glossary.alert(code)
+        explain.apply(card, note='Alert code %s' % code if code else None)
+        h.set_tip(badge, explain.name)
 
         row.addWidget(timeLabel, alignment=Qt.AlignTop)
         row.addWidget(badge, alignment=Qt.AlignTop)
@@ -340,7 +440,14 @@ class EventFeed(QFrame):
 
 # ===========================================================================
 class IncidentCard(QFrame):
-    """One incident with its lifecycle actions."""
+    """One incident, answering three questions before it shows any jargon.
+
+    *What happened* in plain words, *why it matters*, and *what to do about it*
+    come first; the alert code, the raw rule message and the timings are folded
+    behind a details toggle. An operator who already knows the codes loses
+    nothing - they are one click away - and everybody else gets a sentence they
+    can act on.
+    """
 
     acknowledged = pyqtSignal(int)
     resolved = pyqtSignal(int)
@@ -351,63 +458,174 @@ class IncidentCard(QFrame):
         self.compact = compact
         severity = cfg.normalise_level(incident.get('severity'))
         color = t.level_color(severity)
+        code = incident.get('code', '')
+        explain = glossary.alert(code)
 
         self.setObjectName('panel')
         self.setStyleSheet(
             'QFrame#panel { background-color: %s; border: 1px solid %s; '
             'border-left: 3px solid %s; border-radius: %dpx; }'
             % (t.PANEL_ALT, t.BORDER, color, t.RADIUS))
+        explain.apply(self, note='Alert code %s' % code if code else None)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(13, 10, 13, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(13, 11, 13, 11)
+        layout.setSpacing(7)
 
+        # -- severity and lifecycle ---------------------------------------
         head = QHBoxLayout()
-        head.setSpacing(8)
-        head.addWidget(w.LevelPill(severity, size=9))
-        head.addWidget(t.label(incident.get('code', ''), size=11, bold=True,
-                               mono=True))
+        head.setSpacing(7)
+        severityPill = w.LevelPill(severity, size=9)
+        h.set_help(severityPill, 'Severity: %s' % severity.title(),
+                   'Critical means stock is at risk now. Warning means '
+                   'something needs checking before it becomes critical.',
+                   'A critical condition also sounds the alarm in the storeroom.')
+        head.addWidget(severityPill)
         head.addStretch()
         if incident.get('simulated'):
-            head.addWidget(w.Pill('SIMULATED', t.SIM, filled=False, size=9))
-        head.addWidget(w.Pill(incident.get('status', ''),
-                              t.ACCENT if incident.get('status') == 'ACKNOWLEDGED'
-                              else t.TEXT_MUTED, filled=False, size=9))
+            simPill = w.Pill('SIMULATED', t.SIM, filled=False, size=9)
+            glossary.term('simulated').apply(simPill)
+            head.addWidget(simPill)
+        status = incident.get('status', '')
+        statusPill = w.Pill(status,
+                            t.ACCENT if status == 'ACKNOWLEDGED' else t.TEXT_MUTED,
+                            filled=False, size=9)
+        h.set_help(statusPill, 'Status: %s' % status.title(),
+                   'Active means nobody has picked it up yet. Acknowledged '
+                   'means somebody is dealing with it. Resolved means the case '
+                   'is closed.',
+                   glossary.term('incident').why)
+        head.addWidget(statusPill)
         layout.addLayout(head)
 
-        message = t.label(incident.get('message', ''), size=12)
-        message.setWordWrap(True)
-        layout.addWidget(message)
+        # -- what happened, in plain words --------------------------------
+        headline = t.label(explain.name, size=13, bold=True)
+        headline.setWordWrap(True)
+        layout.addWidget(headline)
 
-        if incident.get('root_cause') and not compact:
-            cause = t.label('Assessment: ' + incident['root_cause'], size=10,
-                            color=t.TEXT_DIM)
-            cause.setWordWrap(True)
-            layout.addWidget(cause)
+        if not compact and explain.what:
+            what = t.label(explain.what, size=11, color=t.TEXT_DIM)
+            what.setWordWrap(True)
+            layout.addWidget(what)
 
+        if not compact and explain.why:
+            why = t.label('Why it matters: ' + explain.why, size=11,
+                          color=t.TEXT_DIM)
+            why.setWordWrap(True)
+            layout.addWidget(why)
+
+        # -- what to do ----------------------------------------------------
+        if explain.action:
+            layout.addWidget(self._action_box(explain.action, color, compact))
+
+        # -- context line --------------------------------------------------
         meta = []
         device = registry.get(incident.get('device') or '')
         if device:
-            meta.append(device.label)
+            meta.append(glossary.device_name(device.id, device.label))
         meta.append('started %s' % (incident.get('started_at') or '--')[-8:])
         duration = duration_between(incident.get('started_at'),
                                     incident.get('ended_at'))
-        meta.append('for %s' % humanise_duration(duration))
+        meta.append('open for %s' % humanise_duration(duration))
         if incident.get('acknowledged_by'):
-            meta.append('ack %s' % incident['acknowledged_by'])
-        layout.addWidget(t.label('  ·  '.join(meta), size=10, color=t.TEXT_MUTED))
+            meta.append('acknowledged by %s' % incident['acknowledged_by'])
+        metaLabel = t.label('  ·  '.join(meta), size=10, color=t.TEXT_MUTED)
+        metaLabel.setWordWrap(True)
+        layout.addWidget(metaLabel)
 
+        # -- the technical half, hidden until asked for --------------------
+        if not compact:
+            layout.addWidget(self._details(incident, code))
+
+        # -- actions --------------------------------------------------------
         if incident.get('status') in (db.STATUS_ACTIVE, db.STATUS_ACKNOWLEDGED):
             actions = QHBoxLayout()
             actions.addStretch()
             if incident.get('status') == db.STATUS_ACTIVE:
                 ack = QPushButton('Acknowledge')
                 ack.setStyleSheet(t.outline_button_style(t.ACCENT))
+                glossary.term('acknowledge').apply(ack)
                 ack.clicked.connect(
                     lambda: self.acknowledged.emit(incident['id']))
                 actions.addWidget(ack)
             resolve = QPushButton('Resolve')
             resolve.setStyleSheet(t.ghost_button_style())
+            glossary.term('resolve').apply(resolve)
             resolve.clicked.connect(lambda: self.resolved.emit(incident['id']))
             actions.addWidget(resolve)
             layout.addLayout(actions)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _action_box(text, color, compact):
+        """The recommended response, given the same weight as the problem."""
+        box = QFrame()
+        box.setObjectName('action')
+        box.setStyleSheet(
+            'QFrame#action { background-color: %s; border: none; '
+            'border-left: 2px solid %s; border-radius: %dpx; }'
+            % (t.PANEL, color, t.RADIUS_SM))
+        row = QVBoxLayout(box)
+        row.setContentsMargins(10, 7, 10, 7)
+        row.setSpacing(2)
+        if not compact:
+            row.addWidget(t.caption('What to do', color=color))
+        body = t.label(text, size=11, color=t.TEXT)
+        body.setWordWrap(True)
+        row.addWidget(body)
+        h.set_help(box, 'Recommended action',
+                   'The step that usually clears this condition, or the person '
+                   'to call if it does not.',
+                   'Guidance, not a substitute for local procedure - follow '
+                   'your site rules where they differ.')
+        return box
+
+    @staticmethod
+    def _details(incident, code):
+        """Code, raw rule message and assessment, collapsed by default."""
+        container = QWidget()
+        container.setStyleSheet('background: transparent;')
+        column = QVBoxLayout(container)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(5)
+
+        body = QFrame()
+        body.setObjectName('details')
+        body.setStyleSheet('QFrame#details { background-color: %s; border: none; '
+                           'border-radius: %dpx; }' % (t.PANEL, t.RADIUS_SM))
+        inner = QVBoxLayout(body)
+        inner.setContentsMargins(10, 8, 10, 8)
+        inner.setSpacing(4)
+        inner.addWidget(w.KeyValue('Alert code', code or '--', t.TEXT, 96))
+        inner.addWidget(w.KeyValue('Rule message', incident.get('message', '--'),
+                                   t.TEXT, 96))
+        if incident.get('root_cause'):
+            inner.addWidget(w.KeyValue('Assessment', incident['root_cause'],
+                                       t.TEXT_DIM, 96))
+        device = registry.get(incident.get('device') or '')
+        if device:
+            inner.addWidget(w.KeyValue('Device', device.label, t.TEXT_DIM, 96))
+        inner.addWidget(w.KeyValue('Incident', '#%s' % incident.get('id', '--'),
+                                   t.TEXT_DIM, 96))
+        body.hide()
+
+        toggle = QPushButton('▸  Technical details')
+        toggle.setCursor(Qt.PointingHandCursor)
+        toggle.setStyleSheet(t.ghost_button_style())
+        h.set_tip(toggle, 'Show the alert code and the exact rule message.')
+
+        def flip():
+            shown = not body.isVisible()
+            body.setVisible(shown)
+            toggle.setText(('▾  Technical details' if shown
+                            else '▸  Technical details'))
+
+        toggle.clicked.connect(flip)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(toggle)
+        row.addStretch()
+        column.addLayout(row)
+        column.addWidget(body)
+        return container

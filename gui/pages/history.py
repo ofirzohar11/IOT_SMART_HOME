@@ -11,22 +11,59 @@ from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout,
 
 from config import mqtt_init as cfg
 from database import db
-from gui import charts
+from gui import charts, glossary
 from gui.pages.base import Page, page_layout, scrollable
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
 RANGE_OPTIONS = [('1H', 1), ('6H', 6), ('24H', 24), ('7D', 168)]
 
-READING_COLUMNS = ['Time', 'A °C', 'B °C', 'Room °C', 'Hum %', 'Door', 'Operator',
-                   'Power', 'Batt %', 'Comp', 'Amps', 'Fan', 'RPM', 'Siren', 'Level']
-EVENT_COLUMNS = ['Time', 'Level', 'Code', 'Message', 'Operator', 'Device', 'Source']
+RANGE_TIPS = {
+    1: 'The last hour.',
+    6: 'The last six hours.',
+    24: 'The last day - the usual view for a shift handover.',
+    168: 'The last seven days.',
+}
+
+# A table header has room for two words, so the rest of the sentence lives in
+# the tooltip on each heading.
+READING_COLUMNS = [
+    ('Time', 'When this reading was stored.'),
+    ('Main °C', 'Temperature from the main thermometer inside the fridge. '
+                'Shown amber when outside %s.' % glossary.TARGET),
+    ('Backup °C', 'Temperature from the second, independent thermometer.'),
+    ('Room °C', 'Temperature of the storeroom outside the fridge.'),
+    ('Hum %', 'Humidity inside the fridge.'),
+    ('Door', 'Whether the door was open or closed.'),
+    ('Opened by', 'The staff member whose badge was last read. UNKNOWN means '
+                  'the door was opened without a badge.'),
+    ('Power', 'Mains electricity or backup battery.'),
+    ('Batt %', 'Charge left in the backup battery.'),
+    ('Cooling', 'Whether the cooling motor was switched on.'),
+    ('Motor A', 'Electricity the cooling motor was actually drawing. This is '
+                'what proves it really ran.'),
+    ('Fan', 'Whether the circulation fan was switched on.'),
+    ('Fan rpm', 'How fast the fan was actually turning.'),
+    ('Alarm', 'Whether the alarm sounder was sounding.'),
+    ('Verdict', 'The overall severity at that moment.'),
+]
+EVENT_COLUMNS = [
+    ('Time', 'When the system reported this.'),
+    ('Level', 'Info, Warning or Critical.'),
+    ('Code', 'The internal name of the rule that fired.'),
+    ('Message', 'What the rule reported, in its own words.'),
+    ('Operator', 'The staff member involved, where one is known.'),
+    ('Device', 'The sensor or switch the event was attributed to.'),
+    ('Source', 'Whether this came from a real condition or an armed '
+               'simulation.'),
+]
 
 
 class HistoryPage(Page):
 
     title = 'History'
-    subtitle = 'Stored readings, events and reports'
+    subtitle = 'The stored record - what happened, and when'
 
     def __init__(self, console):
         super().__init__(console)
@@ -41,11 +78,26 @@ class HistoryPage(Page):
 
         body.addWidget(self._build_controls())
         body.addWidget(self._build_charts())
-        body.addWidget(w.SectionTitle('Readings', 'five-second audit trail'))
+        body.addWidget(w.SectionTitle(
+            'Every reading', 'a full snapshot stored every few seconds',
+            help=h.Explain(
+                'Every reading',
+                'One row for every stored snapshot of the whole unit, newest '
+                'first.',
+                'It is the audit trail. When somebody asks what the fridge was '
+                'doing at 03:40 last Tuesday, this is the answer.',
+                note='Hover any column heading to see what it means.')))
         self.readingsTable = self._make_table(READING_COLUMNS, even=True)
         self.readingsTable.setMinimumHeight(260)
         body.addWidget(self.readingsTable)
-        body.addWidget(w.SectionTitle('Alert events'))
+        body.addWidget(w.SectionTitle(
+            'Alerts raised', 'every warning and alarm, as it was reported',
+            help=h.Explain(
+                'Alerts raised',
+                'Each time a rule changed its mind - a condition appearing, '
+                'and later clearing.',
+                'The readings table says what the fridge was doing; this says '
+                'what the system made of it.')))
         self.eventsTable = self._make_table(EVENT_COLUMNS)
         self.eventsTable.setMinimumHeight(220)
         body.addWidget(self.eventsTable)
@@ -54,29 +106,73 @@ class HistoryPage(Page):
 
     # -- construction ------------------------------------------------------
     def _build_controls(self):
-        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24)
+        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24, tips=RANGE_TIPS)
         self.rangeControl.changed.connect(self._change_range)
 
         exportBtn = QPushButton('Export readings')
         exportBtn.setStyleSheet(t.outline_button_style())
+        h.set_help(exportBtn, 'Export to a spreadsheet',
+                   'Saves the stored readings as a CSV file you can open in '
+                   'Excel.',
+                   'A temperature record is only useful if it can leave the '
+                   'screen and go into a report.')
         exportBtn.clicked.connect(self.export_csv)
         refreshBtn = QPushButton('Refresh')
         refreshBtn.setStyleSheet(t.ghost_button_style())
+        h.set_tip(refreshBtn, 'Re-read everything on this page from storage.')
         refreshBtn.clicked.connect(self.refresh)
 
-        card = w.Card('Summary', actions=[self.rangeControl, exportBtn, refreshBtn])
+        card = w.Card('Summary', 'The selected period at a glance',
+                      actions=[self.rangeControl, exportBtn, refreshBtn],
+                      help=h.Explain(
+                          'Summary',
+                          'The headline numbers for the period selected on the '
+                          'right.',
+                          'It answers the shift-handover question - was '
+                          'anything wrong while I was away? - without reading '
+                          'a single table row.'))
         row = QHBoxLayout()
         row.setSpacing(10)
         self.tiles = {}
-        for key, caption in (('samples', 'readings stored'),
-                             ('temp_min', 'min temperature'),
-                             ('temp_max', 'max temperature'),
-                             ('temp_avg', 'average temperature'),
-                             ('excursion', 'minutes out of band'),
-                             ('door_events', 'door openings'),
-                             ('warnings', 'warnings'),
-                             ('criticals', 'critical events')):
-            tile = w.StatTile(caption)
+        tiles = (
+            ('samples', 'readings stored', h.Explain(
+                'Readings stored',
+                'How many complete snapshots were saved in this period.',
+                'A gap in the count is a gap in the monitoring.')),
+            ('temp_min', 'coldest', h.Explain(
+                'Coldest reading',
+                'The lowest temperature recorded in this period.',
+                'Freezing damages many medicines as surely as overheating.',
+                'Not below %.0f °C.' % cfg.TEMP_TARGET_MIN)),
+            ('temp_max', 'warmest', h.Explain(
+                'Warmest reading',
+                'The highest temperature recorded in this period.',
+                'This is the number an audit looks at first.',
+                'Not above %.0f °C.' % cfg.TEMP_TARGET_MAX)),
+            ('temp_avg', 'average', h.Explain(
+                'Average temperature',
+                'The mean of every reading in this period.',
+                'A healthy average can still hide a short excursion, so read '
+                'it beside the warmest and coldest figures.',
+                glossary.TARGET)),
+            ('excursion', 'minutes out of range', glossary.metric('excursion')),
+            ('door_events', 'door openings', h.Explain(
+                'Door openings',
+                'How many times the door was opened in this period.',
+                'Frequent openings are the usual explanation for a fridge that '
+                'keeps drifting warm.')),
+            ('warnings', 'warnings', h.Explain(
+                'Warnings',
+                'How many warnings were raised in this period.',
+                'A warning is the early notice - something to check, not yet '
+                'something at risk.', 'Zero.')),
+            ('criticals', 'critical alarms', h.Explain(
+                'Critical alarms',
+                'How many critical conditions were raised in this period.',
+                'Each one is a moment when the stock was at risk.', 'Zero.')),
+        )
+        for key, caption, explain in tiles:
+            tile = w.StatTile(caption, help=explain)
             self.tiles[key] = tile
             row.addWidget(tile)
         card.add_layout(row)
@@ -98,10 +194,18 @@ class HistoryPage(Page):
             thresholds=[charts.Threshold(cfg.HUM_ALARM_MAX, t.CRITICAL)],
             unit=' %', title='Humidity', minimum_height=190)
         self.plantChart = charts.TimeSeriesChart(
-            [charts.Trace('current_avg', 'Compressor A', t.WARN, unit=' A')],
+            [charts.Trace('current_avg', 'Cooling motor', t.WARN, unit=' A')],
             0, 14,
             thresholds=[charts.Threshold(cfg.CURRENT_OVERLOAD_A, t.CRITICAL)],
-            unit=' A', title='Compressor current', minimum_height=190)
+            unit=' A', title='Cooling motor power', minimum_height=190)
+        glossary.metric('humidity').apply(
+            self.humidityChart,
+            note='The green band is the safe range; the dashed red line is the '
+                 'hard limit.')
+        glossary.device('current').apply(
+            self.plantChart, 'Compressor current',
+            note='The dashed red line is the overload limit. Flat at zero '
+                 'while the motor is commanded on means it is not running.')
         top.addWidget(self.humidityChart)
         top.addWidget(self.plantChart)
         layout.addLayout(top)
@@ -116,8 +220,19 @@ class HistoryPage(Page):
             unit=' rpm', title='Fan speed', minimum_height=190)
         self.activityChart = charts.StateTimeline(
             [('door_open', 'Door open', t.WARN),
-             ('compressor_on', 'Compressor', t.ACCENT),
+             ('compressor_on', 'Cooling', t.ACCENT),
              ('fan_on', 'Fan', t.OK)], minimum_height=190)
+        glossary.device('fan_rpm').apply(
+            self.fanChart, 'Fan speed',
+            note='The upper dashed line is the worn-bearing threshold; below '
+                 'the lower one the fan counts as stalled.')
+        h.set_help(self.activityChart, 'Activity timeline',
+                   'When the door was open and when the cooling and the fan '
+                   'were running, drawn on one shared timeline.',
+                   'Laid over each other, the three bars explain the '
+                   'temperature line above them: a long door bar or a gap in '
+                   'the cooling bar is usually the whole story.',
+                   'Short door bars, and cooling cycling on and off.')
         bottom.addWidget(self.fanChart)
         bottom.addWidget(self.activityChart)
         layout.addLayout(bottom)
@@ -125,7 +240,11 @@ class HistoryPage(Page):
 
     def _make_table(self, columns, even=False):
         table = QTableWidget(0, len(columns))
-        table.setHorizontalHeaderLabels(columns)
+        table.setHorizontalHeaderLabels([name for name, _tip in columns])
+        for index, (_name, tip) in enumerate(columns):
+            item = table.horizontalHeaderItem(index)
+            if item is not None:
+                item.setToolTip(h.tooltip_html('', tip))
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(True)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)

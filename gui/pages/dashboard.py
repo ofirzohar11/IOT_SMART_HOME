@@ -5,6 +5,10 @@ them: is the stock safe, what is the temperature, is anything wrong, are the
 machines doing what they were told, is the data trustworthy, and what happened
 recently. Everything above the fold is current state; history and detail live
 further down and on the other pages.
+
+The banner across the top answers the first three in words rather than in
+numbers - safe or not, what is wrong, and what to do about it - because the
+person who walks past this screen is usually not the person who built it.
 """
 
 from PyQt5.QtCore import Qt
@@ -13,28 +17,69 @@ from PyQt5.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
 
 from config import mqtt_init as cfg
 from database import db
-from gui import charts
+from gui import charts, glossary
 from gui.components import ActuatorCard, EventFeed, IncidentCard, MetricTile
 from gui.pages.base import Page, page_layout, scrollable
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
+# The plain-language verdict. The technical severity is still shown beside it,
+# in the counts and on every incident, so nothing is hidden by simplifying.
 HEADLINES = {
-    cfg.LEVEL_INFO: 'Storage conditions are within specification',
-    cfg.LEVEL_WARNING: 'Attention required - conditions are drifting',
-    cfg.LEVEL_CRITICAL: 'Immediate action required - stock is at risk',
+    cfg.LEVEL_INFO: 'The fridge is safe',
+    cfg.LEVEL_WARNING: 'Something needs checking',
+    cfg.LEVEL_CRITICAL: 'Act now - the stock is at risk',
 }
 
+STATUS_WORDS = {
+    cfg.LEVEL_INFO: 'SAFE',
+    cfg.LEVEL_WARNING: 'ATTENTION',
+    cfg.LEVEL_CRITICAL: 'ACT NOW',
+}
+
+DEFAULT_ACTIONS = {
+    cfg.LEVEL_INFO: 'Nothing to do. Storage conditions are inside the required '
+                    'limits.',
+    cfg.LEVEL_WARNING: 'Open the Incidents page to see what needs checking.',
+    cfg.LEVEL_CRITICAL: 'Open the Incidents page - each one lists the '
+                        'recommended action.',
+}
+
+STATUS_HELP = h.tooltip_html(
+    'Overall verdict',
+    'One word for the state of the whole unit: SAFE, ATTENTION or ACT NOW.',
+    'It is the answer to the only question most people have when they walk '
+    'past this screen.',
+    'SAFE - the temperature is inside %s and no condition is open.'
+    % glossary.TARGET,
+    'These correspond to the severities used elsewhere in the console: SAFE is '
+    'Info, ATTENTION is Warning, ACT NOW is Critical.')
+
 RANGE_OPTIONS = [('1H', 1), ('6H', 6), ('24H', 24), ('7D', 168)]
+RANGE_TIPS = {
+    1: 'The last hour, in fine detail.',
+    6: 'The last six hours.',
+    24: 'The last day - the usual view for a shift handover.',
+    168: 'The last seven days, for spotting a slow drift.',
+}
 
 
 class HeroBanner(QFrame):
-    """The single most important line on the screen."""
+    """The single most important line on the screen.
+
+    Three rows, in the order somebody asks them: is it safe, what is wrong, and
+    what should I do. The recommended action comes from the most serious open
+    incident, so the banner tells the operator where to go next instead of
+    leaving them to work it out from the severity colour.
+    """
 
     def __init__(self):
         super().__init__()
         self.setObjectName('panel')
-        self.setFixedHeight(96)
+        self.setMinimumHeight(124)
+        self._action = ''
+        self._open_count = 0
         self._paint(t.OFF)
 
         row = QHBoxLayout(self)
@@ -44,26 +89,53 @@ class HeroBanner(QFrame):
         self.statusLabel = QLabel('WAITING')
         self.statusLabel.setAlignment(Qt.AlignCenter)
         self.statusLabel.setFixedWidth(178)
+        self.statusLabel.setToolTip(STATUS_HELP)
         self._paint_status(t.OFF, 'WAITING', '○')
         row.addWidget(self.statusLabel)
 
         text = QVBoxLayout()
         text.setSpacing(3)
         self.headlineLabel = t.label('Connecting to the monitoring system…',
-                                     size=16, bold=True)
+                                     size=17, bold=True)
+        self.headlineLabel.setWordWrap(True)
         self.detailLabel = t.label('', size=12, color=t.TEXT_DIM)
         self.detailLabel.setWordWrap(True)
         text.addWidget(self.headlineLabel)
         text.addWidget(self.detailLabel)
+
+        self.actionLabel = t.label('', size=12, color=t.TEXT)
+        self.actionLabel.setWordWrap(True)
+        h.set_help(self.actionLabel, 'What to do',
+                   'The recommended response to the most serious problem that '
+                   'is currently open.',
+                   'It turns a colour into an instruction, so the screen is '
+                   'useful to somebody who has never been trained on it.',
+                   note='Guidance only - follow your site procedure where it '
+                        'differs.')
+        text.addWidget(self.actionLabel)
         row.addLayout(text, stretch=1)
 
         counts = QVBoxLayout()
         counts.setSpacing(4)
         counts.setAlignment(Qt.AlignRight)
         self.criticalPill = w.Pill('0 critical', t.OFF, filled=False)
+        h.set_help(self.criticalPill, 'Critical conditions',
+                   'How many critical problems are open right now.',
+                   'Critical means the stock is at risk and somebody has to '
+                   'act immediately.', 'Zero.')
         self.warningPill = w.Pill('0 warnings', t.OFF, filled=False)
+        h.set_help(self.warningPill, 'Warnings',
+                   'How many warnings are open right now.',
+                   'A warning is the early notice that lets somebody fix a '
+                   'problem before the stock is affected.', 'Zero.')
         self.updatedLabel = t.label('', size=10, color=t.TEXT_MUTED,
                                     align=Qt.AlignRight)
+        h.set_help(self.updatedLabel, 'Last update',
+                   'When this console last heard from the unit, and how long '
+                   'the monitoring has been running.',
+                   'A timestamp that stops advancing means the screen is '
+                   'showing you the past.',
+                   'Updating every second.')
         counts.addWidget(self.criticalPill, alignment=Qt.AlignRight)
         counts.addWidget(self.warningPill, alignment=Qt.AlignRight)
         counts.addWidget(self.updatedLabel)
@@ -82,27 +154,49 @@ class HeroBanner(QFrame):
             'border-radius: %dpx; font-family: %s; font-size: 16px; '
             'font-weight: 700; padding: 15px 8px;' % (color, t.RADIUS, t.FONT))
 
+    def set_action(self, text, open_count=0):
+        """Called by the page with the advice from the worst open incident."""
+        self._action = text or ''
+        self._open_count = open_count
+
     def update_state(self, data):
         level = cfg.normalise_level(data.get('level', cfg.LEVEL_INFO))
         mode = data.get('mode')
         sensor_state = data.get('sensor_state', 'ONLINE')
+        if level == cfg.LEVEL_INFO:
+            # Saying "act now" under the word SAFE would be a contradiction, so
+            # a calm verdict only ever points at the leftover paperwork.
+            action = (('Conditions are normal, but %d incident%s still open on '
+                       'the Incidents page.'
+                       % (self._open_count, 's are' if self._open_count > 1
+                          else ' is'))
+                      if self._open_count else DEFAULT_ACTIONS[cfg.LEVEL_INFO])
+        else:
+            action = self._action or DEFAULT_ACTIONS.get(level, '')
 
         if not data.get('broker_connected', True):
-            color, text, glyph = t.CRITICAL, 'LINK DOWN', '■'
-            headline = 'No connection to the message broker'
+            color, text, glyph = t.CRITICAL, 'NO SIGNAL', '■'
+            headline = 'This console has lost contact with the unit'
+            action = ('Check the network connection. The fridge keeps cooling, '
+                      'but nobody is watching it - verify the temperature at '
+                      'the unit itself.')
         elif mode == 'MAINTENANCE':
-            color, text, glyph = t.ACCENT, 'MAINTENANCE', '⚙'
-            headline = 'Maintenance mode - alarms are not escalating'
+            color, text, glyph = t.ACCENT, 'SERVICING', '⚙'
+            headline = 'Maintenance mode - alarms are not being raised'
+            action = ('Conditions are still measured and recorded. Leave '
+                      'maintenance mode as soon as servicing is finished.')
         elif sensor_state == 'OFFLINE':
-            color, text, glyph = t.CRITICAL, 'SENSOR DOWN', '■'
-            headline = 'The primary probe has stopped reporting'
+            color, text, glyph = t.CRITICAL, 'NO READING', '■'
+            headline = 'The main thermometer has stopped reporting'
+            action = glossary.alert('SENSOR_OFFLINE').action
         elif sensor_state == 'WAITING':
             color, text, glyph = t.OFF, 'WAITING', '○'
-            headline = 'Waiting for the first telemetry'
+            headline = 'Waiting for the first reading from the unit'
+            action = 'Nothing to do yet - readings usually arrive within a few '\
+                     'seconds of the unit starting.'
         else:
             color = t.level_color(level)
-            text = {'INFO': 'NORMAL', 'WARNING': 'WARNING',
-                    'CRITICAL': 'CRITICAL'}.get(level, level)
+            text = STATUS_WORDS.get(level, level)
             glyph = t.level_glyph(level)
             headline = HEADLINES.get(level, '')
 
@@ -111,15 +205,23 @@ class HeroBanner(QFrame):
         self.headlineLabel.setText(headline)
 
         detail = data.get('diagnosis') or ''
-        if not detail:
+        if detail:
+            detail = 'Assessment: ' + detail
+        else:
             temperature = data.get('temperature')
             if temperature is not None:
-                detail = ('Cabinet at %.1f °C, target %.0f-%.0f °C'
-                          % (temperature, cfg.TEMP_TARGET_MIN, cfg.TEMP_TARGET_MAX))
+                detail = ('Now %.1f °C inside the fridge - the safe range is %s.'
+                          % (temperature, glossary.TARGET))
         if data.get('simulation_active'):
             detail += ('   ·   simulated faults are armed' if detail
                        else 'Simulated faults are armed')
         self.detailLabel.setText(detail)
+
+        self.actionLabel.setText(('→  %s' % action) if action else '')
+        self.actionLabel.setStyleSheet(
+            'color: %s; font-family: %s; font-size: 12px; background: transparent; '
+            'border: none;' % (t.TEXT if level != cfg.LEVEL_INFO else t.TEXT_DIM,
+                               t.FONT))
 
         counts = data.get('alert_counts') or {}
         criticals = counts.get(cfg.LEVEL_CRITICAL, 0)
@@ -143,8 +245,17 @@ def _uptime(seconds):
 class EnvironmentCard(w.Card):
     """Door, power and link - the three states that are not numbers."""
 
+    HELP = h.Explain(
+        'Unit status',
+        'The four things about the fridge that are a state rather than a '
+        'measurement: is it shut, is it powered, is it being heard, and is it '
+        'in service or being maintained.',
+        'Each one can ruin the stock on its own, whatever the temperature '
+        'currently reads.',
+        'Door closed, on mains power, connected, and in Monitoring mode.')
+
     def __init__(self):
-        super().__init__('Environment')
+        super().__init__('Unit status', help=self.HELP)
         grid = QGridLayout()
         grid.setSpacing(9)
 
@@ -158,12 +269,19 @@ class EnvironmentCard(w.Card):
         self.linkNote = t.label('', size=10, color=t.TEXT_MUTED)
         self.modeNote = t.label('', size=10, color=t.TEXT_MUTED)
 
-        for row, (name, pill, note) in enumerate((
-                ('Door', self.doorPill, self.doorNote),
-                ('Power', self.powerPill, self.powerNote),
-                ('Connectivity', self.linkPill, self.linkNote),
-                ('Mode', self.modePill, self.modeNote))):
-            grid.addWidget(t.label(name, size=11, color=t.TEXT_DIM), row, 0)
+        rows = (
+            ('Door', self.doorPill, self.doorNote, glossary.device('door')),
+            ('Power', self.powerPill, self.powerNote, glossary.device('power')),
+            ('Connection', self.linkPill, self.linkNote,
+             glossary.term('connection')),
+            ('Mode', self.modePill, self.modeNote, glossary.term('maintenance')),
+        )
+        for row, (name, pill, note, explain) in enumerate(rows):
+            label = t.label(name, size=11, color=t.TEXT_DIM)
+            if explain is not None:
+                explain.apply(label)
+                explain.apply(pill)
+            grid.addWidget(label, row, 0)
             grid.addWidget(pill, row, 1, alignment=Qt.AlignRight)
             grid.addWidget(note, row, 2)
         grid.setColumnStretch(2, 1)
@@ -176,12 +294,13 @@ class EnvironmentCard(w.Card):
             color = (t.CRITICAL if seconds >= cfg.DOOR_ALARM_SECONDS else
                      t.WARN if seconds >= cfg.DOOR_WARNING_SECONDS else t.ACCENT)
             self.doorPill.set('OPEN', color, '▲')
-            self.doorNote.setText('%d s  ·  critical at %d s'
+            self.doorNote.setText('open %d s  ·  alarm at %d s'
                                   % (seconds, cfg.DOOR_ALARM_SECONDS))
         else:
             self.doorPill.set('CLOSED', t.OK, '●')
             operator = data.get('operator')
-            self.doorNote.setText('sealed' if not operator else 'last: %s' % operator)
+            self.doorNote.setText('shut' if not operator
+                                  else 'last opened by %s' % operator)
 
         power = data.get('power', '--')
         battery = float(data.get('battery') or 0)
@@ -191,7 +310,7 @@ class EnvironmentCard(w.Card):
             self.powerPill.set('BATTERY',
                                t.CRITICAL if battery <= cfg.BATTERY_ALARM_PERCENT
                                else t.WARN, '▲')
-        self.powerNote.setText('battery %.0f %%' % battery)
+        self.powerNote.setText('battery at %.0f %%' % battery)
 
         connected = data.get('broker_connected', True)
         self.linkPill.set('ONLINE' if connected else 'OFFLINE',
@@ -206,7 +325,8 @@ class EnvironmentCard(w.Card):
         self.modePill.set(mode, t.ACCENT if mode == 'MAINTENANCE' else t.OK,
                           '⚙' if mode == 'MAINTENANCE' else '●')
         operator = data.get('mode_operator')
-        self.modeNote.setText(('by %s' % operator) if operator else 'normal operation')
+        self.modeNote.setText(('set by %s' % operator) if operator
+                              else 'normal operation')
 
 
 class DashboardPage(Page):
@@ -245,27 +365,65 @@ class DashboardPage(Page):
         gauges = QHBoxLayout()
         gauges.setSpacing(12)
         self.tempGauge = charts.ArcGauge(
-            'Cabinet temperature', ' °C', cfg.TEMP_GAUGE_MIN, cfg.TEMP_GAUGE_MAX,
+            'Fridge temperature', ' °C', cfg.TEMP_GAUGE_MIN, cfg.TEMP_GAUGE_MAX,
             cfg.TEMP_TARGET_MIN, cfg.TEMP_TARGET_MAX,
             cfg.TEMP_ALARM_MIN, cfg.TEMP_ALARM_MAX)
+        glossary.metric('temperature').apply(
+            self.tempGauge,
+            note='The green arc is the safe range; the red marks are the hard '
+                 'limits. Measured by the main thermometer.')
         self.humGauge = charts.ArcGauge(
-            'Humidity', ' %', cfg.HUM_GAUGE_MIN, cfg.HUM_GAUGE_MAX,
+            'Air humidity', ' %', cfg.HUM_GAUGE_MIN, cfg.HUM_GAUGE_MAX,
             cfg.HUM_TARGET_MIN, cfg.HUM_TARGET_MAX, 0.0, cfg.HUM_ALARM_MAX)
+        glossary.metric('humidity').apply(
+            self.humGauge,
+            note='The green arc is the safe range. Measured by the same probe '
+                 'as the temperature.')
         gauges.addWidget(self.tempGauge)
         gauges.addWidget(self.humGauge)
         column.addLayout(gauges)
 
+        column.addWidget(w.SectionTitle(
+            'Supporting sensors',
+            'the readings that catch a lying thermometer or a dead motor',
+            help=h.Explain(
+                'Supporting sensors',
+                'Five extra sensors that check the system itself rather than '
+                'the storage conditions.',
+                'The temperature alone cannot tell you whether it can be '
+                'trusted, or why it is wrong. These can: a second probe, the '
+                'room, the motor current, the fan speed and the badge reader.',
+                'All five reading normally.')))
+
         tiles = QHBoxLayout()
         tiles.setSpacing(10)
-        self.probeTile = MetricTile('probe B', ' °C')
-        self.ambientTile = MetricTile('storeroom', ' °C')
-        self.currentTile = MetricTile('compressor draw', ' A', fmt='%.2f')
-        self.rpmTile = MetricTile('fan speed', ' rpm', fmt='%.0f')
-        self.operatorTile = w.StatTile('last opened by', value_size=13, mono=False)
+        self.probeTile = MetricTile('Backup thermometer', ' °C',
+                                    help=glossary.device('temp_b'))
+        self.ambientTile = MetricTile('Room temperature', ' °C',
+                                      help=glossary.device('ambient'))
+        self.currentTile = MetricTile('Cooling motor', ' A', fmt='%.2f',
+                                      help=glossary.device('current'))
+        self.rpmTile = MetricTile('Fan speed', ' rpm', fmt='%.0f',
+                                  help=glossary.device('fan_rpm'))
+        self.operatorTile = w.StatTile('Last opened by', value_size=13,
+                                       mono=False,
+                                       help=glossary.metric('operator'))
         for tile in (self.probeTile, self.ambientTile, self.currentTile,
                      self.rpmTile, self.operatorTile):
             tiles.addWidget(tile)
         column.addLayout(tiles)
+
+        column.addWidget(w.SectionTitle(
+            'Equipment',
+            'what each part was told to do, and what it is really doing',
+            help=h.Explain(
+                'Equipment',
+                'The three switched parts of the unit: the cooling motor, the '
+                'circulation fan and the alarm sounder.',
+                'A switch reporting ON only proves it was asked. Each card '
+                'puts the command next to an independent measurement, which is '
+                'how a welded relay or a seized motor is caught.',
+                'Commanded and measured agree on every card.')))
 
         devices = QHBoxLayout()
         devices.setSpacing(12)
@@ -276,18 +434,34 @@ class DashboardPage(Page):
             devices.addWidget(card)
         column.addLayout(devices)
 
-        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24)
+        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24,
+                                               tips=RANGE_TIPS)
         self.rangeControl.changed.connect(self._change_range)
-        chartCard = w.Card('Temperature history', actions=[self.rangeControl])
+        chartCard = w.Card(
+            'Temperature history', 'Green band = the safe range',
+            actions=[self.rangeControl],
+            help=h.Explain(
+                'Temperature history',
+                'The last few hours of temperature: the main thermometer in '
+                'blue, the backup in purple and the storeroom in grey.',
+                'A single reading cannot tell you whether things are getting '
+                'better or worse. The shape of the line can, and two probes '
+                'drawn together make a drifting one obvious.',
+                'A gentle saw-tooth inside the green band as the cooling '
+                'cycles on and off.',
+                note='Hover anywhere on the chart to read the exact values at '
+                     'that moment.'))
         self.tempChart = charts.TimeSeriesChart(
-            [charts.Trace('temp_avg', 'Probe A', t.ACCENT, fill=True, unit=' °C'),
-             charts.Trace('temp_b_avg', 'Probe B', t.SIM, width=1.4, unit=' °C'),
+            [charts.Trace('temp_avg', 'Main probe', t.ACCENT, fill=True, unit=' °C'),
+             charts.Trace('temp_b_avg', 'Backup probe', t.SIM, width=1.4, unit=' °C'),
              charts.Trace('ambient_avg', 'Room', t.TEXT_MUTED, width=1.2, unit=' °C')],
             cfg.TEMP_GAUGE_MIN, cfg.TEMP_GAUGE_MAX,
             bands=[charts.Band(cfg.TEMP_TARGET_MIN, cfg.TEMP_TARGET_MAX, t.OK)],
             thresholds=[charts.Threshold(cfg.TEMP_ALARM_MIN, t.CRITICAL),
                         charts.Threshold(cfg.TEMP_ALARM_MAX, t.CRITICAL)],
             unit=' °C', minimum_height=230)
+        h.set_tip(self.tempChart,
+                  'Hover to read the exact values at any moment.')
         chartCard.add(self.tempChart, stretch=1)
         column.addWidget(chartCard, stretch=1)
         return column
@@ -299,9 +473,12 @@ class DashboardPage(Page):
         self.environment = EnvironmentCard()
         column.addWidget(self.environment)
 
-        self.incidentsCard = w.Card('Active incidents')
-        self.incidentsEmpty = w.EmptyState('✓', 'Nothing active',
-                                           'Conditions are within limits.')
+        self.incidentsCard = w.Card(
+            'Needs attention', 'Most serious first',
+            help=glossary.term('incident'))
+        self.incidentsEmpty = w.EmptyState(
+            '✓', 'Nothing needs attention',
+            'Every condition the system checks is currently normal.')
         self.incidentsCard.add(self.incidentsEmpty)
         self.incidentsBox = QVBoxLayout()
         self.incidentsBox.setSpacing(7)
@@ -342,25 +519,33 @@ class DashboardPage(Page):
         if not operator:
             self.operatorTile.set_value('—', t.TEXT_MUTED)
         elif operator == cfg.UNKNOWN_OPERATOR:
-            self.operatorTile.set_value('no badge', t.WARN)
+            self.operatorTile.set_value('No badge', t.WARN)
         else:
             self.operatorTile.set_value(operator, t.TEXT)
 
     def _update_actuators(self, data):
+        """Command beside measurement, with the mismatch said in plain words."""
         health = data.get('device_health') or {}
         current = data.get('compressor_current')
         commanded_on = data.get('compressor') == 'ON'
         self.compressorCard.set_state(commanded_on)
         self.compressorCard.set_health(health.get('compressor', 'OFFLINE'))
         if current is None:
-            self.compressorCard.set_measurement('--', t.TEXT_MUTED, 'no current sensor')
+            self.compressorCard.set_measurement('--', t.TEXT_MUTED,
+                                                'no reading from the sensor')
         else:
             drawing = current >= cfg.CURRENT_RUNNING_MIN_A
             mismatch = commanded_on != drawing
             overload = current > cfg.CURRENT_OVERLOAD_A
-            color = t.CRITICAL if (mismatch or overload) else (
-                t.OK if drawing else t.TEXT_MUTED)
-            caption = 'contradicts the command' if mismatch else 'measured draw'
+            if mismatch:
+                color = t.CRITICAL
+                caption = ('switched on but not running' if commanded_on
+                           else 'switched off but still running')
+            elif overload:
+                color, caption = t.CRITICAL, 'drawing far too much power'
+            else:
+                color = t.OK if drawing else t.TEXT_MUTED
+                caption = 'motor is running' if drawing else 'motor is off'
             self.compressorCard.set_measurement('%.2f A' % current, color, caption)
 
         rpm = data.get('fan_rpm')
@@ -368,16 +553,19 @@ class DashboardPage(Page):
         self.fanCard.set_state(fan_on)
         self.fanCard.set_health(health.get('fan', 'OFFLINE'))
         if rpm is None:
-            self.fanCard.set_measurement('--', t.TEXT_MUTED, 'no tachometer')
+            self.fanCard.set_measurement('--', t.TEXT_MUTED,
+                                         'no reading from the sensor')
         else:
             turning = rpm >= cfg.FAN_RPM_MIN
             if fan_on != turning:
-                color, caption = t.CRITICAL, 'contradicts the command'
+                color = t.CRITICAL
+                caption = ('switched on but not turning' if fan_on
+                           else 'switched off but still turning')
             elif turning and rpm < cfg.FAN_RPM_DEGRADED:
-                color, caption = t.WARN, 'below the minimum'
+                color, caption = t.WARN, 'turning too slowly'
             else:
                 color = t.OK if turning else t.TEXT_MUTED
-                caption = 'measured speed'
+                caption = 'fan is turning' if turning else 'fan is stopped'
             self.fanCard.set_measurement('%d rpm' % int(rpm), color, caption)
 
         self.sirenCard.set_state(data.get('siren') == 'ON')
@@ -421,18 +609,37 @@ class DashboardPage(Page):
             return
 
         w.clear_layout(self.incidentsBox)
+        self.hero.set_action(self._recommended_action(incidents),
+                             len(incidents))
 
         if not incidents:
             self.incidentsEmpty.show()
             return
         self.incidentsEmpty.hide()
 
-        for incident in incidents[:4]:
+        # Most serious first: an operator reading top-down should meet the
+        # thing that matters most before anything else.
+        ordered = sorted(
+            incidents,
+            key=lambda row: -cfg.LEVEL_ORDER.get(
+                cfg.normalise_level(row.get('severity')), 0))
+
+        for incident in ordered[:4]:
             card = IncidentCard(incident, compact=True)
             card.acknowledged.connect(self.console.acknowledge_incident)
             card.resolved.connect(self.console.resolve_incident)
             self.incidentsBox.addWidget(card)
-        if len(incidents) > 4:
-            self.incidentsBox.addWidget(
-                t.label('+ %d more on the Incidents page' % (len(incidents) - 4),
-                        size=10, color=t.TEXT_MUTED))
+        if len(ordered) > 4:
+            more = t.label('+ %d more on the Incidents page' % (len(ordered) - 4),
+                           size=10, color=t.TEXT_MUTED)
+            self.incidentsBox.addWidget(more)
+
+    @staticmethod
+    def _recommended_action(incidents):
+        """The advice for the most serious open incident, for the banner."""
+        if not incidents:
+            return ''
+        worst = max(incidents,
+                    key=lambda row: cfg.LEVEL_ORDER.get(
+                        cfg.normalise_level(row.get('severity')), 0))
+        return glossary.alert(worst.get('code')).action

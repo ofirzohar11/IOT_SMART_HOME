@@ -6,12 +6,19 @@ from PyQt5.QtWidgets import (QComboBox, QHBoxLayout, QPushButton, QVBoxLayout,
 from config import devices as registry
 from config import mqtt_init as cfg
 from database import db
+from gui import glossary
 from gui.components import IncidentCard
 from gui.pages.base import Page, page_layout, scrollable
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
 RANGE_OPTIONS = [('24H', 24), ('7D', 168), ('30D', 720)]
+RANGE_TIPS = {
+    24: 'Incidents from the last day.',
+    168: 'Incidents from the last seven days.',
+    720: 'Incidents from the last thirty days - the usual audit window.',
+}
 STATUS_OPTIONS = ['All statuses', db.STATUS_ACTIVE, db.STATUS_ACKNOWLEDGED,
                   db.STATUS_RESOLVED]
 SEVERITY_OPTIONS = ['All severities'] + list(cfg.LEVELS)
@@ -20,13 +27,19 @@ SEVERITY_OPTIONS = ['All severities'] + list(cfg.LEVELS)
 class IncidentsPage(Page):
 
     title = 'Incidents'
-    subtitle = 'Active and historical conditions'
+    subtitle = 'What went wrong, why it matters and what to do about it'
 
     def __init__(self, console):
         super().__init__(console)
         self._hours = 24
 
         outer = page_layout(self)
+        outer.addWidget(h.InlineNote(
+            'An incident is a problem the system has opened a case for. It '
+            'stays open until the condition goes away or somebody closes it. '
+            'Acknowledge means "I am dealing with this" and records your name; '
+            'Resolve closes the case - and if the problem is still real, the '
+            'system re-opens it within a second.'))
         outer.addWidget(self._build_summary())
         outer.addWidget(self._build_filters())
 
@@ -35,20 +48,35 @@ class IncidentsPage(Page):
         self.listLayout = QVBoxLayout(inner)
         self.listLayout.setContentsMargins(0, 0, 6, 6)
         self.listLayout.setSpacing(8)
-        self.empty = w.EmptyState('✓', 'No incidents match these filters',
-                                  'Try widening the time range or clearing a filter.')
+        self.empty = w.EmptyState(
+            '✓', 'Nothing to show',
+            'No incidents match these filters. Try a wider time range, or set '
+            'the filters back to "All".')
         self.listLayout.addWidget(self.empty)
         self.listLayout.addStretch()
         outer.addWidget(scrollable(inner), stretch=1)
 
     def _build_summary(self):
-        card = w.Card('Incident summary')
+        card = w.Card('Incident summary', help=glossary.term('incident'))
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.activeTile = w.StatTile('active')
-        self.criticalTile = w.StatTile('critical open')
-        self.ackTile = w.StatTile('acknowledged')
-        self.resolvedTile = w.StatTile('resolved in range')
+        self.activeTile = w.StatTile('still open', help=h.Explain(
+            'Still open',
+            'Incidents that nobody has closed yet, whether or not they have '
+            'been acknowledged.',
+            'It is the size of the queue: how much is waiting for somebody.',
+            'Zero.'))
+        self.criticalTile = w.StatTile('critical open', help=h.Explain(
+            'Critical and open',
+            'Open incidents where the stock is at risk right now.',
+            'These are the ones that cannot wait for the next shift.',
+            'Zero.'))
+        self.ackTile = w.StatTile('acknowledged', help=glossary.term('acknowledge'))
+        self.resolvedTile = w.StatTile('resolved', help=h.Explain(
+            'Resolved in this period',
+            'Incidents that have been closed within the selected time range.',
+            'A useful count for a handover or an audit: how much went wrong, '
+            'and how much of it was dealt with.'))
         for tile in (self.activeTile, self.criticalTile, self.ackTile,
                      self.resolvedTile):
             row.addWidget(tile)
@@ -56,7 +84,13 @@ class IncidentsPage(Page):
         return card
 
     def _build_filters(self):
-        card = w.Card('Filters')
+        card = w.Card('Filters', 'Narrow the list below', help=h.Explain(
+            'Filters',
+            'Narrow the list to one severity, one device, one status or a '
+            'different stretch of time.',
+            'A month of incidents is unreadable as one list. Filtering is how '
+            'you answer a specific question, such as "what has this fan done '
+            'in the last week?".'))
         row = QHBoxLayout()
         row.setSpacing(9)
 
@@ -68,23 +102,36 @@ class IncidentsPage(Page):
             self.deviceBox.addItem(device.label, device.id)
         self.statusBox = QComboBox()
         self.statusBox.addItems(STATUS_OPTIONS)
+        h.set_tip(self.severityBox,
+                  'Show only critical problems, only warnings, or everything.')
+        h.set_tip(self.deviceBox, 'Show only the incidents raised against one '
+                                  'sensor or switch.')
+        h.set_tip(self.statusBox, 'Show only incidents that are still open, '
+                                  'already acknowledged, or closed.')
         for box in (self.severityBox, self.deviceBox, self.statusBox):
             box.setStyleSheet(t.COMBO_STYLE)
             box.currentIndexChanged.connect(lambda _i: self.refresh())
             row.addWidget(box)
 
-        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24)
+        self.rangeControl = w.SegmentedControl(RANGE_OPTIONS, 24, tips=RANGE_TIPS)
         self.rangeControl.changed.connect(self._change_range)
         row.addWidget(self.rangeControl)
         row.addStretch()
 
         exportBtn = QPushButton('Export CSV')
         exportBtn.setStyleSheet(t.outline_button_style())
+        h.set_help(exportBtn, 'Export to a spreadsheet',
+                   'Saves every incident in the selected time range as a CSV '
+                   'file you can open in Excel.',
+                   'It is the evidence a pharmacy audit or a temperature '
+                   'excursion report asks for.')
         exportBtn.clicked.connect(self.export_csv)
         row.addWidget(exportBtn)
 
         refreshBtn = QPushButton('Refresh')
         refreshBtn.setStyleSheet(t.ghost_button_style())
+        h.set_tip(refreshBtn, 'Re-read the list from the stored record. It '
+                              'also updates on its own as conditions change.')
         refreshBtn.clicked.connect(self.refresh)
         row.addWidget(refreshBtn)
 

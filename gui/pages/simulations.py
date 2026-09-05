@@ -17,7 +17,9 @@ from PyQt5.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QPushButton,
                              QVBoxLayout, QWidget)
 
 from config import devices as registry
+from gui import glossary
 from gui.pages.base import Page, page_layout, scrollable
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
@@ -50,6 +52,10 @@ class ScenarioCard(QFrame):
 
         button = QPushButton('Run scenario')
         button.setStyleSheet(t.outline_button_style(t.SIM))
+        h.set_help(button, 'Run "%s"' % scenario.label, scenario.description,
+                   'A drill proves the alarms work. Until one has been run, a '
+                   'silent system and a broken one look identical.',
+                   note='Expect: %s' % scenario.expectation)
         button.clicked.connect(lambda: on_run(scenario))
         layout.addWidget(button, alignment=Qt.AlignLeft)
 
@@ -57,7 +63,7 @@ class ScenarioCard(QFrame):
 class SimulationsPage(Page):
 
     title = 'Simulations'
-    subtitle = 'Fault injection and drills'
+    subtitle = 'Break something on purpose, and watch the alarms catch it'
 
     def __init__(self, console):
         super().__init__(console)
@@ -76,7 +82,15 @@ class SimulationsPage(Page):
         for group in registry.GROUPS:
             members = [d for d in registry.DEVICES if d.group == group]
             if members:
-                body.addWidget(w.SectionTitle('%s faults' % group))
+                body.addWidget(w.SectionTitle(
+                    '%s faults' % group, glossary.GROUPS.get(group, ''),
+                    help=h.Explain(
+                        '%s faults' % group,
+                        'Individual failures you can arm on each device in the '
+                        '%s group.' % group.lower(),
+                        'Arming one fault at a time is how you check that a '
+                        'single rule fires - and, just as importantly, that '
+                        'nothing else fires with it.')))
                 body.addWidget(self._build_group(members))
         body.addStretch()
         outer.addWidget(scrollable(inner), stretch=1)
@@ -95,27 +109,46 @@ class SimulationsPage(Page):
 
         text = QVBoxLayout()
         text.setSpacing(3)
-        text.addWidget(t.label('Fault injection is live', size=14, bold=True))
+        text.addWidget(t.label('Test the alarms by breaking something on purpose',
+                               size=14, bold=True))
         self.summaryLabel = t.label(
-            'Arming a fault changes the real behaviour of an emulated device. '
-            'The alarms that follow are produced by the same rules as a genuine '
-            'failure.', size=11, color=t.TEXT_DIM)
+            'Arming a fault changes what an emulated device really does - it '
+            'genuinely stops publishing, genuinely draws no current. The alarm '
+            'that follows is raised by the same rules as a real failure, and '
+            'everything it causes is labelled SIMULATED.',
+            size=11, color=t.TEXT_DIM)
         self.summaryLabel.setWordWrap(True)
         text.addWidget(self.summaryLabel)
         row.addLayout(text, stretch=1)
 
         self.activePill = w.Pill('0 armed', t.TEXT_MUTED, filled=False, size=12)
+        h.set_help(self.activePill, 'Armed faults',
+                   'How many simulated faults are currently active.',
+                   'Anything left armed keeps producing alarms, so this number '
+                   'should be zero whenever a drill is finished.', 'Zero.')
         row.addWidget(self.activePill)
 
         self.resetButton = QPushButton('Reset all simulations')
         self.resetButton.setStyleSheet(t.button_style(t.SIM))
+        h.set_help(self.resetButton, 'Reset everything',
+                   'Clears every armed fault on every device at once.',
+                   'It is the one-click way back to normal after a drill.',
+                   note='Devices return to normal behaviour immediately.')
         self.resetButton.clicked.connect(self._reset_all)
         row.addWidget(self.resetButton)
         return frame
 
     def _build_scenarios(self):
-        card = w.Card('Scenarios',
-                      'Realistic multi-device failures for a drill or a demo.')
+        card = w.Card(
+            'Ready-made drills', 'One click arms a realistic failure',
+            help=h.Explain(
+                'Ready-made drills',
+                'Each one arms several faults at once to reproduce a failure '
+                'the way it happens in real life.',
+                'Real failures are rarely a single broken part. A power cut '
+                'drains a battery; a dead compressor also warms the cabinet. '
+                'These reproduce the whole chain.',
+                note='Every drill is reversible with "Reset all simulations".'))
         grid = QGridLayout()
         grid.setSpacing(10)
         for index, scenario in enumerate(registry.SCENARIOS):
@@ -134,8 +167,13 @@ class SimulationsPage(Page):
         grid.setSpacing(12)
 
         for index, device in enumerate(devices):
-            card = w.Card('%s  %s' % (device.icon, device.label),
-                          device.describes)
+            entry = glossary.device(device.id)
+            # Plain name in the heading, engineering name directly underneath:
+            # the same pairing the Devices page uses, so a device can be found
+            # by either of its names.
+            card = w.Card(
+                '%s  %s' % (device.icon, entry.name if entry else device.label),
+                '%s · %s' % (device.label, device.describes), help=entry)
             for fault in device.faults:
                 key = '%s:%s' % (device.id, fault.id)
                 row = w.ToggleRow(key, fault.label, fault.description,
@@ -143,7 +181,10 @@ class SimulationsPage(Page):
                 row.toggled.connect(self._toggle)
                 self.rows[key] = row
                 card.add(row)
-            grid.addWidget(card, index // COLUMNS, index % COLUMNS)
+            # Top-aligned so a device with three faults keeps its natural
+            # height instead of being stretched to match one with eleven.
+            grid.addWidget(card, index // COLUMNS, index % COLUMNS,
+                           Qt.AlignTop)
         for column in range(COLUMNS):
             grid.setColumnStretch(column, 1)
         return container

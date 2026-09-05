@@ -27,8 +27,9 @@ from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
 from config import devices as registry
 from config import mqtt_init as cfg
 from config.mqtt_client import MqttClient, parse_json
-from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM, WARN,
-                      label)
+from ui import help as h
+from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM,
+                      TOOLTIP_STYLE, WARN, label)
 
 TELEMETRY_DELAY_FACTOR = 4     # publish one sample in four when delayed
 
@@ -83,7 +84,16 @@ class EmulatorPanel(QFrame):
         header.setSpacing(10)
         titles = QVBoxLayout()
         titles.setSpacing(1)
-        titles.addWidget(label(self.window_title, size=14, bold=True))
+        titleLabel = label(self.window_title, size=14, bold=True)
+        # This window is the simulated hardware, not the console, so the
+        # engineering name stays on it - the explanation goes in the tooltip.
+        h.set_help(titleLabel, self.device.label, self.device.describes,
+                   'This window stands in for one physical device. It holds its '
+                   'own connection to the broker and publishes on its own '
+                   'schedule, exactly as the real hardware would.',
+                   note='%d faults can be armed on it, from here or from the '
+                        'console.' % len(self.device.faults))
+        titles.addWidget(titleLabel)
         titles.addWidget(label(self.device.describes, size=10, color=TEXT_DIM))
         header.addLayout(titles)
         header.addStretch()
@@ -310,6 +320,7 @@ class EmulatorWindow(QMainWindow):
 def run_panel(panel_factory, geometry):
     """Entry point used by every single-device emulator script."""
     app = QApplication(sys.argv)
+    app.setStyleSheet(TOOLTIP_STYLE)
     panel = panel_factory()
     window = EmulatorWindow(panel, geometry)
     window.show()

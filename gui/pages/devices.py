@@ -3,8 +3,10 @@
 from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 from config import devices as registry
+from gui import glossary
 from gui.components import DeviceCard
 from gui.pages.base import Page, page_layout, scrollable
+from ui import help as h
 from ui import theme as t
 from ui import widgets as w
 
@@ -28,7 +30,7 @@ VALUE_FIELDS = {
 class DevicesPage(Page):
 
     title = 'Devices'
-    subtitle = 'Connection, health and freshness'
+    subtitle = 'Every sensor and switch, and whether it is still talking'
 
     def __init__(self, console):
         super().__init__(console)
@@ -47,8 +49,14 @@ class DevicesPage(Page):
             members = [d for d in registry.DEVICES if d.group == group]
             if not members:
                 continue
-            body.addWidget(w.SectionTitle(group,
-                                          '%d devices' % len(members)))
+            body.addWidget(w.SectionTitle(
+                group, glossary.GROUPS.get(group, '%d devices' % len(members)),
+                help=h.Explain(
+                    group, glossary.GROUPS.get(group, ''),
+                    'Grouping the devices by where they sit makes it obvious '
+                    'who to call: the cabinet is stock, the plant is '
+                    'refrigeration, the facility is the building.',
+                    '%d devices, all connected.' % len(members))))
             grid = QGridLayout()
             grid.setSpacing(12)
             for index, device in enumerate(members):
@@ -63,18 +71,28 @@ class DevicesPage(Page):
         outer.addWidget(scrollable(inner))
 
     def _build_summary(self):
-        card = w.Card('Fleet status',
-                      'A device is marked offline once it misses three of its '
-                      'scheduled slots.')
+        card = w.Card(
+            'Fleet status',
+            'How many devices are in each state right now',
+            help=glossary.term('health'))
         row = QHBoxLayout()
         row.setSpacing(10)
         self.tiles = {}
         for health in ('CONNECTED', 'DEGRADED', 'FAULT', 'OFFLINE', 'MAINTENANCE'):
-            tile = w.StatTile(health.lower())
+            entry = glossary.health(health)
+            tile = w.StatTile(health.lower(), help=entry)
             tile.set_value('0', t.health_color(health))
             self.tiles[health] = tile
             row.addWidget(tile)
         card.add_layout(row)
+        # The five words are meaningless on their own, and this is the first
+        # thing somebody reads on a page they have never opened.
+        card.add(h.InlineNote(
+            'Connected = reporting on schedule.   Degraded = still reporting, '
+            'but something is wrong.   Fault = its readings contradict what '
+            'the equipment was told to do.   Offline = it has stopped '
+            'reporting, so whatever it was checking is no longer checked.   '
+            'Maintenance = deliberately excused while the unit is serviced.'))
         return card
 
     def apply_status(self, data):
@@ -91,6 +109,7 @@ class DevicesPage(Page):
             value = self._numeric(device_id, data)
             if value is not None and health != 'OFFLINE':
                 card.spark.add(value)
+                card.spark.show()
 
         for health, tile in self.tiles.items():
             count = counts.get(health, 0)
