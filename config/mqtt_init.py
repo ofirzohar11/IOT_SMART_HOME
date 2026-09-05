@@ -6,6 +6,7 @@ exactly once.
 """
 
 import socket
+import sys
 
 # --------------------------------------------------------------------------
 # Broker selection
@@ -70,6 +71,11 @@ TOPIC_INCIDENTS = TOPIC_ROOT + '/incidents'
 # GUI -> manager
 TOPIC_MODE_CMD = TOPIC_ROOT + '/mode/cmd'
 TOPIC_INCIDENT_CMD = TOPIC_ROOT + '/incident/cmd'   # acknowledge / resolve
+
+# GUI -> everyone: the thresholds below, as edited from the Settings page.
+# Published retained, so a process that starts later is configured the moment
+# it connects rather than running on stale limits until the next edit.
+TOPIC_SETTINGS = TOPIC_ROOT + '/settings'
 
 # GUI -> emulators: fault injection. Every device subscribes and applies the
 # faults it owns; each reports back what it currently has active.
@@ -203,3 +209,19 @@ SENSOR_PUBLISH_MS = 3000     # temperature sensor sample rate
 EVALUATE_INTERVAL_S = 1.0    # data manager rule evaluation tick
 DB_WRITE_INTERVAL_S = 5.0    # how often a reading row is persisted
 STATUS_PUBLISH_INTERVAL_S = 1.0
+
+# --------------------------------------------------------------------------
+# Operator overrides
+# --------------------------------------------------------------------------
+# Everything above is the recommended default. The console can override any of
+# the thresholds listed in ``config.settings``, and those overrides are written
+# back onto this module here, at the end of the import, before any other module
+# has had a chance to read a value.
+#
+# The order matters: the literals are captured as the recommended values first,
+# so "Restore recommended defaults" restores what this file declares rather
+# than whatever happens to be loaded.
+from config import settings as _settings   # noqa: E402  (must come last)
+
+RECOMMENDED = _settings.capture_defaults(sys.modules[__name__])
+_settings.apply_saved(sys.modules[__name__])

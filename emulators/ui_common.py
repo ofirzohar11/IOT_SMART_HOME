@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
 
 from config import devices as registry
 from config import mqtt_init as cfg
+from config import settings as thresholds
 from config.mqtt_client import MqttClient, parse_json
 from ui import help as h
 from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM, WARN,
@@ -125,7 +126,7 @@ class EmulatorPanel(QFrame):
             on_disconnect=lambda: self.connection_changed.emit(False),
             on_message=lambda topic, payload: self.message_received.emit(topic, payload),
         )
-        self.mqtt.subscribe(cfg.TOPIC_SIM_CMD)
+        self.mqtt.subscribe(cfg.TOPIC_SIM_CMD, cfg.TOPIC_SETTINGS)
 
         # Drives the simulated-outage countdown and any subclass housekeeping.
         self._housekeeping = QTimer(self)
@@ -177,6 +178,8 @@ class EmulatorPanel(QFrame):
         try:
             if topic == cfg.TOPIC_SIM_CMD:
                 self._apply_sim_command(payload)
+            elif topic == cfg.TOPIC_SETTINGS:
+                self._apply_settings(payload)
             else:
                 self.on_mqtt_message(topic, payload)
         except Exception as error:
@@ -203,6 +206,26 @@ class EmulatorPanel(QFrame):
 
     def has_fault(self, fault_id):
         return fault_id in self.faults
+
+    # -- configuration -----------------------------------------------------
+    def _apply_settings(self, payload):
+        """Adopt thresholds edited on the console.
+
+        The emulated hardware uses a handful of them - what a healthy motor
+        draws, what speed the fan is rated at, how warm the room settles - and
+        every panel reads them at the moment it needs them, so nothing has to
+        be restarted for a change to take effect.
+        """
+        data = parse_json(payload, {})
+        proposed = data.get('values')
+        if not isinstance(proposed, dict):
+            return
+        clean, errors = thresholds.validate(proposed)
+        for key in errors:
+            clean.pop(key, None)
+        changed = thresholds.apply_to(cfg, clean)
+        if changed:
+            print('[%s] %d threshold(s) updated' % (self.role, len(changed)))
 
     # -- simulation --------------------------------------------------------
     def _apply_sim_command(self, payload):

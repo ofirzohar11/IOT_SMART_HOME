@@ -35,6 +35,7 @@ from datetime import datetime
 
 from config import devices as registry
 from config import mqtt_init as cfg
+from config import settings as thresholds
 from config.mqtt_client import MqttClient, parse_json
 from database import db
 
@@ -201,6 +202,8 @@ class ColdChainManager:
                     self._handle_fan_rpm(payload)
                 elif topic == cfg.TOPIC_MODE_CMD:
                     self._handle_mode(payload)
+                elif topic == cfg.TOPIC_SETTINGS:
+                    self._handle_settings(payload)
                 elif topic.startswith(cfg.TOPIC_SIM_STS):
                     self._handle_sim_status(payload)
                 elif topic == cfg.TOPIC_INCIDENT_CMD:
@@ -324,6 +327,41 @@ class ColdChainManager:
         self._journal_event(cfg.LEVEL_INFO, 'MODE',
                             'System mode changed to %s by %s' % (mode, operator),
                             operator=operator)
+
+    def _handle_settings(self, payload):
+        """Adopt thresholds edited on the console.
+
+        The message is retained, so this also runs once on every connect and a
+        manager started after the console is configured before it evaluates
+        anything. The values are validated here rather than trusted: this
+        process is the one that acts on them, and a broker is a public place.
+        """
+        data = parse_json(payload, {})
+        proposed = data.get('values')
+        if not isinstance(proposed, dict):
+            return
+        operator = data.get('operator') or cfg.DEFAULT_OPERATOR
+
+        clean, errors = thresholds.validate(proposed)
+        for key in errors:
+            clean.pop(key, None)
+            print('%s  manager | rejected threshold %s: %s'
+                  % (stamp(), key, errors[key]))
+
+        before = thresholds.effective(cfg)
+        changed = thresholds.apply_to(cfg, clean)
+        if not changed:
+            return
+
+        # Written to the event log because a threshold change alters what the
+        # record means: an auditor reading an excursion has to be able to see
+        # that the limit moved, and when, and who moved it.
+        for line in thresholds.describe(clean, before):
+            self._journal_event(cfg.LEVEL_INFO, 'SETTINGS',
+                                'Threshold changed by %s: %s' % (operator, line),
+                                operator=operator)
+        print('%s  manager | %d threshold(s) updated by %s'
+              % (stamp(), len(changed), operator))
 
     def _handle_sim_status(self, payload):
         """Devices announce which faults they currently have armed."""
@@ -969,6 +1007,10 @@ class ColdChainManager:
             'device_counts': dict(counts),
             'simulated_faults': {k: list(v) for k, v in self.simulated_faults.items()},
             'simulation_active': bool(self.simulated_faults),
+            # The thresholds this manager is actually enforcing. The console
+            # shows them back on the Settings page, so an edit can be seen to
+            # have reached the process that acts on it rather than assumed to.
+            'thresholds': thresholds.effective(cfg),
         }
 
     # ------------------------------------------------------------------
@@ -988,7 +1030,8 @@ class ColdChainManager:
                             cfg.TOPIC_CURRENT, cfg.TOPIC_FAN_RPM,
                             cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_FAN_STS,
                             cfg.TOPIC_SIREN_STS, cfg.TOPIC_MODE_CMD,
-                            cfg.TOPIC_SIM_STS_WILDCARD, cfg.TOPIC_INCIDENT_CMD)
+                            cfg.TOPIC_SIM_STS_WILDCARD, cfg.TOPIC_INCIDENT_CMD,
+                            cfg.TOPIC_SETTINGS)
         self.mqtt.start()
         print('%s  manager | connecting to %s:%s'
               % (stamp(), cfg.BROKER_HOST, cfg.BROKER_PORT))

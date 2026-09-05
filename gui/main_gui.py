@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout,
                              QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from config import mqtt_init as cfg
+from config import settings as thresholds
 from config.mqtt_client import QOS_COMMAND, MqttClient, parse_json
 from database import db
 from gui import glossary
@@ -35,6 +36,7 @@ from gui.pages.dashboard import DashboardPage
 from gui.pages.devices import DevicesPage
 from gui.pages.history import HistoryPage
 from gui.pages.incidents import IncidentsPage
+from gui.pages.settings import SettingsPage
 from gui.pages.simulations import SimulationsPage
 from ui import help as h
 from ui import theme as t
@@ -64,6 +66,9 @@ NAV_ITEMS = [
      'it causes is labelled SIMULATED.'),
     ('History', '▤', HistoryPage,
      'The stored record: every reading and every alert, ready to export.'),
+    ('Settings', '⚙', SettingsPage,
+     'The limits every alarm is measured against: what each one is, what it '
+     'is recommended to be, and what happens when it is crossed.'),
 ]
 
 
@@ -107,6 +112,7 @@ class MainWindow(QWidget):
         self._last_snapshot = {}
         self._last_alert_toast = 0.0
         self._suppressed_alerts = 0
+        self._settings_announced = False
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -272,6 +278,17 @@ class MainWindow(QWidget):
                                {'action': 'clear_all', 'device': '*'},
                                qos=QOS_COMMAND)
 
+    def publish_settings(self, values):
+        """Send the thresholds to every other process, and keep them there.
+
+        Retained, so a data manager or a device started later is configured the
+        moment it connects instead of running on the values it booted with.
+        """
+        self.mqtt.publish_json(cfg.TOPIC_SETTINGS, {
+            'values': values, 'operator': self.operator,
+            'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
+        }, retain=True, qos=QOS_COMMAND)
+
     def acknowledge_incident(self, incident_id):
         self._incident_command('acknowledge', incident_id)
         self.toast('Incident %d acknowledged' % incident_id)
@@ -419,6 +436,14 @@ class MainWindow(QWidget):
                           '●' if connected else '■')
         if not connected:
             self.toast('Lost connection to the broker', t.CRITICAL, '■')
+            return
+        if not self._settings_announced:
+            # The saved thresholds live in a file only this process reads, so
+            # the first thing the console does on connecting is tell everybody
+            # else what they are. Doing it once, on the first connect, leaves a
+            # later edit as the only thing that can change them.
+            self._settings_announced = True
+            self.publish_settings(thresholds.effective(cfg))
 
     def _tick(self):
         # The console must not present a stale snapshot as if it were current.

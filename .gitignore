@@ -9,6 +9,9 @@ env/
 *.db-shm
 *.db-wal
 
+# Operator-set thresholds, written by the Settings page at runtime
+config/thresholds.json
+
 # Exports
 *.csv
 

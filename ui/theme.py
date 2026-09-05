@@ -266,6 +266,21 @@ COMBO_STYLE = '''
 ''' % (PANEL_ALT, TEXT, BORDER, RADIUS_SM, FONT, BORDER_STRONG,
        PANEL_ALT, TEXT, BORDER, '#1D3A63')
 
+
+def line_edit_style(border_color=BORDER, mono=True):
+    """A numeric entry field. The border carries the validation state."""
+    return '''
+        QLineEdit {
+            background-color: %s; color: %s; border: 1px solid %s;
+            border-radius: %dpx; padding: 6px 9px; font-family: %s;
+            font-size: 12px; selection-background-color: %s;
+        }
+        QLineEdit:focus { border-color: %s; }
+        QLineEdit:disabled { color: %s; }
+    ''' % (PANEL_ALT, TEXT, border_color, RADIUS_SM,
+           FONT_MONO if mono else FONT, '#1D3A63', ACCENT, TEXT_MUTED)
+
+
 CHECKBOX_STYLE = '''
     QCheckBox { color: %s; font-family: %s; font-size: 12px;
                 background: transparent; border: none; spacing: 8px; }
