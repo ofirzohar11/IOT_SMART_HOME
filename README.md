@@ -22,20 +22,17 @@ Two things make this hard to catch with a plain thermometer:
    sensor — each ends in spoiled stock, and each needs to be caught *before* the
    temperature has moved.
 
-This project addresses both: three kinds of emulated devices publish to an MQTT
-broker, a data manager applies duration-aware storage rules and drives the
-cooling hardware, and an operator GUI shows the live state plus the stored audit
-trail.
+This project addresses both. Eleven emulated devices publish to an MQTT broker; a
+data manager applies duration-aware storage rules, drives the cooling hardware
+and maintains an incident record; and a five-page operator console shows live
+conditions, device health, incidents, the stored audit trail, and a fault
+injection bench for proving the alarms actually work.
 
-![Dashboard](docs/screenshots/01_dashboard_normal.png)
+![Dashboard](docs/screenshots/20_dashboard_normal.png)
 
 ---
 
 ## Architecture
-
-Eight independent processes, each with its own MQTT connection — exactly how
-separate physical devices behave. No process imports another's state; everything
-travels over the broker.
 
 Fourteen independent processes: eleven emulated devices, the data manager, and
 the GUI. Nothing imports another component's state — everything travels over the
@@ -59,8 +56,8 @@ flowchart LR
 
     B(("MQTT broker<br/>broker.hivemq.com"))
     M["Data manager<br/>rules · control · storage"]
-    DB[("SQLite<br/>readings + events")]
-    G["Main GUI<br/>dashboard + history"]
+    DB[("SQLite<br/>readings · events · incidents")]
+    G["Operator console<br/>5 pages"]
 
     subgraph Actuators["Actuators (relays)"]
         C["Compressor"]
@@ -89,7 +86,8 @@ flowchart LR
     S -- sts --> B
     B -- status + alert --> G
     DB --> G
-    G -- mode/cmd --> B
+    G -- mode/cmd · incident/cmd --> B
+    G -- sim/cmd --> B
 
     B -. compressor/sts .-> TA
     B -. ambient .-> TA
@@ -138,20 +136,20 @@ probe and an unbadged entry all become visible.
 
 **Cabinet sensors** — what is happening inside the unit:
 
-| Component | File | Role and fault switches |
+| Component | File | Role |
 |---|---|---|
-| Temperature probe A | `emulators/temp_emulator.py` | Primary probe. Thermal model of the cabinet, JSON sample every 3 s. Inject *cooling failure* or take the sensor *offline*. |
-| Temperature probe B | `emulators/temp_b_emulator.py` | Redundant probe that cross-checks probe A. Inject *drift* or *freeze* the reading. |
-| Door sensor | `emulators/door_emulator.py` | Reed switch. Retained OPEN / CLOSED state with an optional auto-close. |
+| Temperature probe A | `emulators/temp_emulator.py` | Primary probe. Thermal model of the cabinet, JSON sample every 3 s. Reports humidity too. |
+| Temperature probe B | `emulators/temp_b_emulator.py` | Redundant probe that cross-checks probe A. |
+| Door sensor | `emulators/door_emulator.py` | Reed switch. Retained OPEN / CLOSED state. |
 | RFID badge reader | `emulators/badge_emulator.py` | Names the operator responsible for the next door opening. Three staff badges. |
 
 **Diagnostic sensors** — whether the equipment and the building are healthy:
 
-| Component | File | Role and fault switches |
+| Component | File | Role |
 |---|---|---|
-| Ambient room probe | `emulators/ambient_emulator.py` | Storeroom temperature. Raise it past 30 °C to simulate a building air-conditioning failure. |
-| Compressor current clamp | `emulators/current_emulator.py` | Measures what the motor really draws, with start-up inrush. Inject *open circuit*, *welded relay* or *overload*. |
-| Fan tachometer | `emulators/fan_rpm_emulator.py` | Measures whether the fan really turns. Inject *stall*, *worn bearing* or *free-running*. |
+| Ambient room probe | `emulators/ambient_emulator.py` | Storeroom temperature outside the cabinet. |
+| Compressor current clamp | `emulators/current_emulator.py` | Measures what the motor really draws, including start-up inrush. |
+| Fan tachometer | `emulators/fan_rpm_emulator.py` | Measures whether the fan really turns. |
 | Power supply sensor | `emulators/power_emulator.py` | Mains vs. backup battery, with a drain while on battery. |
 
 **Actuators and applications:**
@@ -162,22 +160,14 @@ probe and an unbadged entry all become visible.
 | Fan relay | `emulators/fan_emulator.py` | Air circulation. |
 | Siren relay | `emulators/siren_emulator.py` | Audible alarm. |
 | Data manager | `data_manager/data_manager.py` | Subscribes to every sensor, evaluates the rules once per second, drives the actuators, writes to SQLite, publishes status and alerts. |
-| Main GUI | `gui/main_gui.py` | Operator dashboard and the history / reports tab. |
+| Operator console | `gui/main_gui.py` | Five-page console: Dashboard, Devices, Incidents, Simulations, History. |
 | Device panel | `emulators/device_panel.py` | Optional shell that hosts all eleven devices in one window. |
 
-Every fault switch above exists so the corresponding rule can be demonstrated
-live rather than described:
+Faults are no longer switches on each emulator window - they are armed from the
+console's **Simulations** page, so one screen drives every device and every
+armed fault is labelled `SIMULATED` wherever it surfaces.
 
-<p align="center">
-  <img src="docs/screenshots/09_emulator_probe_b.png" width="290" alt="Redundant probe drifting away from the primary">
-  <img src="docs/screenshots/12_emulator_current.png" width="290" alt="Compressor commanded on but drawing no current">
-  <img src="docs/screenshots/13_emulator_fan_rpm.png" width="290" alt="Fan turning too slowly - bearing wear">
-</p>
-<p align="center">
-  <img src="docs/screenshots/10_emulator_ambient.png" width="290" alt="Ambient room sensor above the warning threshold">
-  <img src="docs/screenshots/11_emulator_badge.png" width="290" alt="RFID badge reader">
-  <img src="docs/screenshots/07_emulator_relay.png" width="240" alt="Relay actuator emulator">
-</p>
+![Simulations](docs/screenshots/24_simulations.png)
 
 ### Two ways to run the same devices
 
@@ -199,6 +189,86 @@ changes.
 
 ---
 
+## The operator console
+
+Five pages, each answering a different question.
+
+| Page | Answers |
+|---|---|
+| **Dashboard** | Is the stock safe right now, and if not, why? |
+| **Devices** | Is every device connected, and how fresh is its data? |
+| **Incidents** | What has gone wrong, who acknowledged it, how long did it last? |
+| **Simulations** | Does the alarm actually fire when this fails? |
+| **History** | What does the stored record say? |
+
+The dashboard is ordered the way an operator asks: a single status banner and a
+plain-language headline first, then the two gauges, then the diagnostic
+readings, then each actuator's command *beside an independent measurement of
+it*, then history and the live log.
+
+![Critical state](docs/screenshots/21_dashboard_critical.png)
+
+Status is never carried by colour alone — every severity and health state pairs
+its colour with a glyph and a word, so the screen is still readable without
+colour vision.
+
+### Device health
+
+The manager tracks when each device was last heard from and derives one of five
+states. A scheduled publisher that misses roughly three of its slots is marked
+offline; nothing waits for a human to notice the silence.
+
+| State | Meaning |
+|---|---|
+| `CONNECTED` | Reporting on time, no active condition |
+| `DEGRADED` | A warning is attributed to it, or a simulated fault is armed |
+| `FAULT` | A critical condition is attributed to it |
+| `OFFLINE` | Telemetry has stopped |
+| `MAINTENANCE` | The unit is in maintenance mode |
+
+![Devices](docs/screenshots/22_devices.png)
+
+### Incidents
+
+An event records that something happened; an **incident** tracks a condition
+from the moment it starts, through acknowledgement, to the moment it clears —
+with its duration, the device it belongs to, and the assessment the system made
+of its cause. Re-raising the same code does not open a second incident, so a
+condition that lasts an hour stays one row rather than three thousand.
+
+Acknowledging and resolving are published as commands and applied by the
+manager, so the manager stays the only writer of incident state.
+
+![Incidents](docs/screenshots/23_incidents.png)
+
+### Fault injection
+
+Every rule the system enforces is demonstrable on demand. The Simulations page
+arms **69 faults across the 11 devices**, plus six one-click scenarios that
+combine them into realistic failures.
+
+Nothing here fakes data. Arming a fault changes what the emulated hardware
+actually does — the device really stops publishing, really draws no current,
+really reports a frozen value — so the alarm that follows travels the same path
+a genuine failure would. Every armed fault is labelled `SIMULATED` on the
+device, in the event log, and on the incident record.
+
+Three faults are implemented once in the emulator base class and therefore
+available on every device: a dropped broker connection, silence, and
+quarter-rate publishing. A simulated link outage heals itself after 30 seconds,
+because a device with its connection cut cannot hear the command to restore it.
+
+| Scenario | What it arms |
+|---|---|
+| Power Failure | Mains lost, then rapid battery depletion |
+| Compressor Failure | Open circuit on the compressor, cooling lost |
+| Temperature Excursion | Cooling failure while the storeroom is hot |
+| Door Left Open | Door jammed open with no badge |
+| Fan Failure | Circulation fan seized |
+| Sensor Blackout | Both temperature probes stop reporting |
+
+---
+
 ## MQTT topics
 
 Root: `HIT/coldchain/ofir/unit1`
@@ -217,7 +287,10 @@ Root: `HIT/coldchain/ofir/unit1`
 | `actuator/<device>/sts` | relay → manager, GUI, sensors *(retained)* | `ON` / `OFF` |
 | `alert` | manager → GUI | `{"level": "ALARM", "code": "DOOR_OPEN", "message": "...", "operator": "R. Levi", "ts": "..."}` |
 | `status` | manager → GUI | consolidated snapshot, once per second |
-| `mode/cmd` | GUI → manager *(retained)* | `MONITORING` / `MAINTENANCE` |
+| `mode/cmd` | console → manager *(retained)* | `{"mode": "MAINTENANCE", "operator": "..."}` |
+| `incident/cmd` | console → manager | `{"action": "acknowledge", "id": 42, "operator": "..."}` |
+| `sim/cmd` | console → every device | `{"action": "set", "device": "current", "fault": "open_circuit", "active": true}` |
+| `sim/sts/<device>` | device → manager, console *(retained)* | `{"device": "current", "faults": ["open_circuit"]}` |
 
 `<device>` is one of `compressor`, `fan`, `siren`.
 
@@ -238,9 +311,9 @@ All thresholds and timings live in `config/mqtt_init.py`.
 | Condition | Level |
 |---|---|
 | Temperature outside 2–8 °C | WARNING |
-| Temperature outside 0–10 °C | ALARM |
+| Temperature outside 0–10 °C | CRITICAL |
 | Humidity outside 30–70 % | WARNING |
-| Humidity above 85 % | ALARM — condensation risk |
+| Humidity above 85 % | CRITICAL — condensation risk |
 
 ### Time based
 
@@ -250,12 +323,12 @@ reason it holds state instead of reacting message by message:
 | Condition | Level |
 |---|---|
 | Door open longer than 20 s | WARNING |
-| Door open longer than 45 s | ALARM |
-| Temperature continuously outside 2–8 °C for 90 s | ALARM — stock at risk |
-| Probes disagreeing by more than 2 °C for 30 s | ALARM — readings untrustworthy |
+| Door open longer than 45 s | CRITICAL |
+| Temperature continuously outside 2–8 °C for 90 s | CRITICAL — stock at risk |
+| Probes disagreeing by more than 2 °C for 30 s | CRITICAL — readings untrustworthy |
 | Running on backup battery for 60 s | WARNING |
-| Backup battery at or below 20 % | ALARM |
-| No sensor message for 25 s | ALARM — sensor offline |
+| Backup battery at or below 20 % | CRITICAL |
+| No sensor message for 25 s | CRITICAL — sensor offline |
 | Probe B silent for 30 s | WARNING — redundancy lost |
 
 The sensor-offline rule has a start-up grace period, so a manager launched
@@ -269,10 +342,10 @@ the hardware has time to respond.
 
 | Condition | Level | What it means |
 |---|---|---|
-| Compressor ON, drawing under 0.5 A | ALARM | Burnt contact, tripped overload, or a seized motor |
-| Compressor OFF, still drawing current | ALARM | Contacts welded closed — the cabinet will freeze its contents |
-| Compressor drawing over 8 A | ALARM | Straining or shorting |
-| Fan ON, under 300 rpm | ALARM | Blocked or seized |
+| Compressor ON, drawing under 0.5 A | CRITICAL | Burnt contact, tripped overload, or a seized motor |
+| Compressor OFF, still drawing current | CRITICAL | Contacts welded closed — the cabinet will freeze its contents |
+| Compressor drawing over 8 A | CRITICAL | Straining or shorting |
+| Fan ON, under 300 rpm | CRITICAL | Blocked or seized |
 | Fan ON, under 900 rpm | WARNING | Turning but too slowly — bearing wear, service it before it fails |
 | Fan OFF, still turning | WARNING | Welded contact |
 
@@ -328,7 +401,7 @@ every one-second evaluation. Without this, ninety seconds of an open door would
 produce ninety identical warning rows and the log would be unreadable. The
 manager tracks the active level per alert code and only writes on a transition.
 
-![Alarm state](docs/screenshots/02_dashboard_alarm.png)
+![Critical state](docs/screenshots/21_dashboard_critical.png)
 
 ---
 
@@ -341,8 +414,14 @@ humidity, door state and the operator it is attributed to, power source and
 battery, each actuator's commanded state *next to its measured feedback*, and
 the resulting alert level. This is the audit trail a regulator would ask for.
 
-**`events`** — one row per alert transition: timestamp, level, code, message and
-operator.
+**`events`** — one row per alert transition: timestamp, level, code, message,
+operator, device, and whether it came from a simulated fault.
+
+**`incidents`** — the lifecycle of a condition: code, severity, device, message,
+the assessed root cause, when it started and ended, who acknowledged it and
+when, its status, and whether it was simulated. Charts read from a single
+bucketed query that averages roughly one point per pixel column, so a seven-day
+view costs the same to draw as an hourly one.
 
 The columns are declared once in `db.READING_FIELDS` and the INSERT is generated
 from that list, so adding a sensor means adding one entry. A database written by
@@ -353,11 +432,24 @@ The History tab reads both back, summarises the last 24 hours — minimum, maxim
 and average temperature, minutes spent out of band, door openings, warning and
 alarm counts — and exports the readings to CSV.
 
-![History](docs/screenshots/03_history.png)
+![History](docs/screenshots/25_history.png)
 
 ---
 
 ## Design notes
+
+**One writer per kind of state.** The manager is the only process that writes
+incidents; the console asks for changes over MQTT and reads the result back.
+That removes a whole class of race between two processes editing the same row.
+
+**Work off the network thread.** paho delivers callbacks on its own thread. The
+manager's handlers only mutate state under a lock and append to a journal; every
+database write and every publish happens on the manager's own loop, so a slow
+disk can never stall message dispatch.
+
+**Reject implausible readings.** A sensor reporting 1e9 degrees has
+malfunctioned. Treating that as a measurement would raise a temperature alarm
+instead of a sensor fault, so values outside a plausibility band are discarded.
 
 **Shared modules over copy-paste.** The three relays are behaviourally identical,
 so they share `emulators/relay_base.py`; only the name, topics and colour differ.
@@ -380,12 +472,14 @@ cleanly instead of raising an exception inside a callback.
 
 ```
 ColdChainMonitor/
-├── config/          broker settings, topic tree, thresholds, MQTT wrapper
-├── database/        SQLite schema, queries, CSV export
+├── config/          broker settings, topic tree, thresholds, device registry,
+│                    fault catalogue, MQTT wrapper
+├── database/        SQLite schema, incidents, chart aggregates, CSV export
 ├── emulators/       eight sensors, three relays, shared panel base, device panel
-├── data_manager/    rules, control loop, persistence
-├── gui/             operator dashboard and history
-├── ui/              shared theme and Qt bootstrap
+├── data_manager/    rules, control loop, incidents, device health, persistence
+├── gui/             console shell, charts, composite widgets
+│   └── pages/       dashboard, devices, incidents, simulations, history
+├── ui/              design tokens, reusable widgets, Qt bootstrap
 ├── docs/            screenshots
 ├── run/
 │   ├── macos/       start_all.command, start_panel.command
@@ -416,6 +510,9 @@ Everything tunable is in `config/mqtt_init.py`:
 | `ACTUATOR_FAULT_SECONDS` | Grace period before a command is judged against its feedback |
 | `AMBIENT_WARNING_C` | Room temperature that indicates a facility problem |
 | `BADGE_VALID_SECONDS` | How long a badge scan authorises a door opening |
+| `MQTT_DOWN_SECONDS` | How long the broker may be unreachable before it is a fault |
+| `SIM_OUTAGE_SECONDS` | How long a simulated link outage lasts before it heals |
+| `VALID_*_RANGE` | Plausibility limits; readings outside these are rejected as malformed rather than alarmed on |
 | `SENSOR_PUBLISH_MS`, `DB_WRITE_INTERVAL_S` | Timing |
 
 Shortening the timers is useful when recording a demo — see

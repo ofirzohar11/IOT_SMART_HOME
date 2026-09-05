@@ -2,8 +2,8 @@
 
 Regulated storage has to answer more than "was the door opened?" - it has to
 answer "by whom, and were they allowed to?". Scanning a badge here gives the
-data manager a name to attach to the next door opening, so the audit trail
-reads *"door open 38 s - R. Levi"* rather than an anonymous event.
+data manager a name to attach to the next door opening, so the audit trail reads
+*"door open 38 s - R. Levi"* rather than an anonymous event.
 
 Opening the door with no recent scan is not blocked - a reader cannot physically
 stop anyone - but it is recorded as an unauthorised access, which is exactly the
@@ -15,17 +15,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Qt must be able to find its platform plugin before the first widget exists.
 from ui.qt_env import ensure_qt_plugin_path
 ensure_qt_plugin_path()
 
 import time
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QLabel, QPushButton, QVBoxLayout
 
 from config import mqtt_init as cfg
-from emulators import ui_common as ui
+from ui import theme as ui
 from emulators.ui_common import EmulatorPanel, run_panel
 
 # The staff whose badges this reader accepts.
@@ -35,31 +34,24 @@ STAFF = [
     ('OP-8834', 'M. Barak', 'Quality assurance'),
 ]
 
-GEOMETRY = (1240, 60, 340, 340)
+GEOMETRY = (840, 380, 340, 320)
 
 
 class BadgeReaderPanel(EmulatorPanel):
 
     def __init__(self):
-        super().__init__(
-            role='badge',
-            title='🪪  RFID Badge Reader',
-            subtitle='Door access control - names the operator',
-            topic_note='pub: %s' % cfg.TOPIC_BADGE,
-        )
+        super().__init__('badge')
         self.setMinimumWidth(280)
-
         self.last_scan = None
 
         panel = ui.make_subpanel()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
+        layout.setSpacing(7)
 
         self.readoutLabel = QLabel('NO BADGE')
         self.readoutLabel.setAlignment(Qt.AlignCenter)
         self._style_readout(False)
-
         self.validityLabel = ui.label('scan a badge before opening the door',
                                       size=11, color=ui.TEXT_DIM,
                                       align=Qt.AlignCenter)
@@ -70,42 +62,61 @@ class BadgeReaderPanel(EmulatorPanel):
         for badge_id, name, role in STAFF:
             button = QPushButton('%s  ·  %s' % (name, badge_id))
             button.setToolTip(role)
-            button.setFixedHeight(34)
+            button.setFixedHeight(32)
             button.setStyleSheet(ui.outline_button_style(ui.ACCENT))
             button.clicked.connect(
                 lambda _checked, b=badge_id, n=name, r=role: self.scan(b, n, r))
             layout.addWidget(button)
 
         self.body.addWidget(panel)
-
         self.start_mqtt()
 
-        self.ticker = QTimer(self)
-        self.ticker.timeout.connect(self._tick)
-        self.ticker.start(1000)
-
-    def _style_readout(self, valid):
-        color = ui.OK if valid else ui.OFF
+    def _style_readout(self, valid, color=None):
+        color = color or (ui.OK if valid else ui.OFF)
         self.readoutLabel.setStyleSheet(
             'color: %s; background: transparent; border: 2px solid %s; '
-            'border-radius: 10px; font-family: %s; font-size: 17px; '
-            'font-weight: bold; padding: 12px;' % (color, color, ui.FONT))
+            'border-radius: 10px; font-family: %s; font-size: 16px; '
+            'font-weight: bold; padding: 11px;' % (color, color, ui.FONT))
+
+    def on_fault_changed(self, fault_id, active):
+        if fault_id == 'reader_offline' and active:
+            self.last_scan = None
+            self.readoutLabel.setText('READER OFFLINE')
+            self._style_readout(False, ui.ALARM)
+            self.validityLabel.setText('reader is not responding to scans')
 
     def scan(self, badge_id, name, role):
-        self.last_scan = (badge_id, name, time.time())
-        self.readoutLabel.setText(name)
-        self._style_readout(True)
-        self.mqtt.publish_json(cfg.TOPIC_BADGE, {
-            'operator_id': badge_id,
-            'name': name,
-            'role': role,
-        })
-        print('[badge] %s (%s) scanned' % (name, badge_id))
-
-    def _tick(self):
-        if self.last_scan is None:
+        if self.has_fault('reader_offline'):
+            self.validityLabel.setText('reader is offline - scan ignored')
             return
-        _badge_id, name, scanned_at = self.last_scan
+
+        # An unreadable card, or one that is simply not on the staff list.
+        if self.has_fault('badge_invalid'):
+            badge_id, name, authorised = '??-??????', 'UNREADABLE BADGE', False
+        elif self.has_fault('badge_unauthorised'):
+            badge_id, name, authorised = 'OP-0000', 'UNKNOWN HOLDER', False
+        else:
+            authorised = True
+
+        self.last_scan = (badge_id, name, time.time(), authorised)
+        self.readoutLabel.setText(name)
+        self._style_readout(authorised, None if authorised else ui.WARN)
+        if not authorised:
+            self.validityLabel.setText('badge rejected - access not authorised')
+
+        if self.mqtt.suspended or self.has_fault('telemetry_stop'):
+            return
+        self.mqtt.publish_json(cfg.TOPIC_BADGE, {
+            'operator_id': badge_id, 'name': name, 'role': role,
+            'authorised': authorised,
+        }, qos=1)
+
+    def housekeeping(self):
+        if self.last_scan is None or self.has_fault('reader_offline'):
+            return
+        _badge_id, _name, scanned_at, authorised = self.last_scan
+        if not authorised:
+            return
         remaining = cfg.BADGE_VALID_SECONDS - (time.time() - scanned_at)
         if remaining > 0:
             self.validityLabel.setText('valid for another %d s' % int(remaining))

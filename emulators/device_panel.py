@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ui.qt_env import ensure_qt_plugin_path
 ensure_qt_plugin_path()
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout,
                              QMainWindow, QVBoxLayout, QWidget)
 
@@ -68,12 +67,9 @@ class DevicePanelWindow(QMainWindow):
             CurrentSensorPanel(),
             FanRpmSensorPanel(),
 
-            RelayPanel('compressor', 'Compressor', '❄',
-                       cfg.TOPIC_COMPRESSOR_CMD, cfg.TOPIC_COMPRESSOR_STS, t.ACCENT),
-            RelayPanel('fan', 'Fan', '🌀',
-                       cfg.TOPIC_FAN_CMD, cfg.TOPIC_FAN_STS, t.OK),
-            RelayPanel('siren', 'Siren', '🚨',
-                       cfg.TOPIC_SIREN_CMD, cfg.TOPIC_SIREN_STS, t.ALARM),
+            RelayPanel('compressor', t.ACCENT),
+            RelayPanel('fan', t.OK),
+            RelayPanel('siren', t.ALARM),
         ]
 
         grid = QGridLayout()

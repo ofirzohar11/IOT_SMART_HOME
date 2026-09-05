@@ -2,18 +2,24 @@
 
 Responsibilities:
 
-1. Subscribe to every sensor topic on the broker.
-2. Evaluate the storage rules once per second. Some rules are instantaneous
-   (temperature outside 0-10 C), others are time based (door open for too long,
-   temperature outside the 2-8 C band for longer than the tolerated window,
-   running on battery). The time based rules are the reason this component
-   keeps state instead of reacting message by message.
+1. Subscribe to every sensor topic and track when each device was last heard
+   from, so silence is detected rather than mistaken for stability.
+2. Evaluate the storage rules once per second. Some are instantaneous
+   (temperature outside 0-10 C), most are time based - a door open too long, an
+   excursion that has lasted, probes that have disagreed for a while, a relay
+   whose feedback has contradicted its command. Those are the reason this
+   component holds state instead of reacting message by message.
 3. Drive the actuators: compressor with hysteresis, circulation fan, siren.
-4. Persist every reading and every alert transition to SQLite.
-5. Publish a consolidated status snapshot and alert messages for the GUI.
+4. Maintain incidents. An event says something happened; an incident tracks a
+   condition from the moment it starts, through acknowledgement, to the moment
+   it clears.
+5. Persist readings, events and incidents to SQLite, and publish a consolidated
+   status snapshot for the GUI.
 
-Alerts are de-duplicated: an event row and an MQTT alert are produced when a
-condition *starts* and when it *clears*, not on every evaluation tick.
+Threading: paho delivers messages on its own network thread. That thread only
+mutates state under ``self.lock`` and appends to a journal; every database write
+and every outbound publish happens on the manager's own loop, so a slow disk can
+never stall message dispatch.
 """
 
 import os
@@ -21,10 +27,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import collections
 import threading
 import time
+import traceback
 from datetime import datetime
 
+from config import devices as registry
 from config import mqtt_init as cfg
 from config.mqtt_client import MqttClient, parse_json
 from database import db
@@ -38,9 +47,55 @@ SENSOR_OFFLINE = 'OFFLINE'
 
 ACTUATOR_REFRESH_SECONDS = 15  # re-send commands so late relays catch up
 
+# Which device each inbound topic belongs to, for liveness tracking.
+TOPIC_DEVICE = {
+    cfg.TOPIC_TEMP: 'temp',
+    cfg.TOPIC_TEMP_B: 'temp_b',
+    cfg.TOPIC_AMBIENT: 'ambient',
+    cfg.TOPIC_DOOR: 'door',
+    cfg.TOPIC_POWER: 'power',
+    cfg.TOPIC_BADGE: 'badge',
+    cfg.TOPIC_CURRENT: 'current',
+    cfg.TOPIC_FAN_RPM: 'fan_rpm',
+    cfg.TOPIC_COMPRESSOR_STS: 'compressor',
+    cfg.TOPIC_FAN_STS: 'fan',
+    cfg.TOPIC_SIREN_STS: 'siren',
+}
+
+# Which device an alert code should be attributed to on the device page.
+CODE_DEVICE = {
+    'TEMP_RANGE': 'temp', 'TEMP_APPROACHING': 'temp', 'TEMP_EXCURSION': 'temp',
+    'HUM_RANGE': 'temp', 'SENSOR_OFFLINE': 'temp',
+    'PROBE_MISMATCH': 'temp_b', 'PROBE_B_OFFLINE': 'temp_b',
+    'ROOM_HOT': 'ambient',
+    'DOOR_OPEN': 'door', 'UNAUTHORISED_ACCESS': 'badge',
+    'POWER_BATTERY': 'power', 'BATTERY_LOW': 'power',
+    'COMPRESSOR_NO_CURRENT': 'current', 'COMPRESSOR_STUCK_ON': 'current',
+    'COMPRESSOR_OVERLOAD': 'current',
+    'FAN_STALLED': 'fan_rpm', 'FAN_STUCK_ON': 'fan_rpm',
+    'FAN_DEGRADED': 'fan_rpm',
+    'DEVICE_STALE': None, 'MQTT_DOWN': None,
+}
+
 
 def stamp():
     return datetime.now().strftime('%H:%M:%S')
+
+
+def _number(payload, key, valid_range, default=None):
+    """Pull a numeric field out of a payload, rejecting anything implausible.
+
+    A sensor that reports 1e9 degrees has malfunctioned; treating that as a real
+    measurement would raise a temperature alarm instead of a sensor fault.
+    """
+    try:
+        value = float(payload[key])
+    except (KeyError, TypeError, ValueError):
+        return default
+    low, high = valid_range
+    if value != value or not (low <= value <= high):   # NaN or out of range
+        return default
+    return value
 
 
 class ColdChainManager:
@@ -48,7 +103,7 @@ class ColdChainManager:
     def __init__(self):
         self.lock = threading.Lock()
 
-        # Sensor state
+        # -- sensor state ------------------------------------------------
         self.temperature = None
         self.humidity = None
         self.last_temp_time = None
@@ -64,107 +119,141 @@ class ColdChainManager:
         self.compressor_current = None
         self.fan_rpm = None
 
-        # Access control
+        # -- access control ----------------------------------------------
         self.last_badge = None      # (operator_id, name, scanned_at)
         self.door_operator = None   # who the current opening is attributed to
 
-        # Derived state
+        # -- derived state -----------------------------------------------
         self.excursion_since = None
         self.probe_mismatch_since = None
         self.mode = MODE_MONITORING
+        self.mode_since = None
+        self.mode_operator = None
         self.overall_level = cfg.LEVEL_INFO
         self.diagnosis = ''
 
-        # Actuator state as commanded by this manager
+        # -- actuators ---------------------------------------------------
         self.compressor = 'OFF'
         self.fan = 'OFF'
         self.siren = 'OFF'
-        # When each actuator was last commanded, so a fault is only declared
-        # after the hardware has had time to respond.
         self.compressor_since = 0.0
         self.fan_since = 0.0
         self._last_actuator_push = 0.0
 
-        # code -> level, so a condition is reported once per transition
-        self.active_alerts = {}
+        # -- liveness ----------------------------------------------------
+        self.device_seen = {}        # device_id -> monotonic timestamp
+        self.device_health = {}      # device_id -> health constant
+        self.simulated_faults = {}   # device_id -> [fault_id, ...]
+
+        # -- alerts ------------------------------------------------------
+        self.active_alerts = {}      # code -> level, one report per transition
+        self._journal = collections.deque()   # work for the manager thread
 
         self._last_db_write = 0.0
         self._started_at = time.time()
+        self._connected_since = None
+        self._disconnected_since = time.time()
         self._running = True
 
         self.mqtt = MqttClient('manager', on_connect=self._on_connect,
+                               on_disconnect=self._on_disconnect,
                                on_message=self._on_message)
 
     # ------------------------------------------------------------------
     # MQTT
     # ------------------------------------------------------------------
     def _on_connect(self):
-        print('%s  manager | subscribed to sensor topics' % stamp())
+        with self.lock:
+            self._connected_since = time.time()
+            self._disconnected_since = None
+        print('%s  manager | broker connected, subscriptions active' % stamp())
+
+    def _on_disconnect(self):
+        with self.lock:
+            self._connected_since = None
+            if self._disconnected_since is None:
+                self._disconnected_since = time.time()
+        print('%s  manager | broker connection lost' % stamp())
 
     def _on_message(self, topic, payload):
-        """Runs on the paho network thread - only touches state under the lock."""
-        with self.lock:
-            if topic == cfg.TOPIC_TEMP:
-                self._handle_temp(payload)
-            elif topic == cfg.TOPIC_TEMP_B:
-                self._handle_temp_b(payload)
-            elif topic == cfg.TOPIC_AMBIENT:
-                self._handle_ambient(payload)
-            elif topic == cfg.TOPIC_DOOR:
-                self._handle_door(payload)
-            elif topic == cfg.TOPIC_POWER:
-                self._handle_power(payload)
-            elif topic == cfg.TOPIC_BADGE:
-                self._handle_badge(payload)
-            elif topic == cfg.TOPIC_CURRENT:
-                self._handle_current(payload)
-            elif topic == cfg.TOPIC_FAN_RPM:
-                self._handle_fan_rpm(payload)
-            elif topic == cfg.TOPIC_MODE_CMD:
-                self._handle_mode(payload)
+        """Network thread. Mutates state under the lock; never touches the disk."""
+        try:
+            with self.lock:
+                device_id = TOPIC_DEVICE.get(topic)
+                if device_id:
+                    self.device_seen[device_id] = time.time()
 
+                if topic == cfg.TOPIC_TEMP:
+                    self._handle_temp(payload)
+                elif topic == cfg.TOPIC_TEMP_B:
+                    self._handle_temp_b(payload)
+                elif topic == cfg.TOPIC_AMBIENT:
+                    self._handle_ambient(payload)
+                elif topic == cfg.TOPIC_DOOR:
+                    self._handle_door(payload)
+                elif topic == cfg.TOPIC_POWER:
+                    self._handle_power(payload)
+                elif topic == cfg.TOPIC_BADGE:
+                    self._handle_badge(payload)
+                elif topic == cfg.TOPIC_CURRENT:
+                    self._handle_current(payload)
+                elif topic == cfg.TOPIC_FAN_RPM:
+                    self._handle_fan_rpm(payload)
+                elif topic == cfg.TOPIC_MODE_CMD:
+                    self._handle_mode(payload)
+                elif topic.startswith(cfg.TOPIC_SIM_STS):
+                    self._handle_sim_status(payload)
+                elif topic == cfg.TOPIC_INCIDENT_CMD:
+                    self._handle_incident_command(payload)
+        except Exception:
+            # One malformed message must never take the manager down.
+            print('%s  manager | error handling %s:\n%s'
+                  % (stamp(), topic, traceback.format_exc()))
+
+    # ------------------------------------------------------------------
+    # Inbound message handlers (all run under the lock)
+    # ------------------------------------------------------------------
     def _handle_temp(self, payload):
         data = parse_json(payload)
         if not data:
             print('%s  manager | malformed temperature payload: %r' % (stamp(), payload))
             return
-        try:
-            self.temperature = float(data['temperature'])
-            self.humidity = float(data.get('humidity', self.humidity or 0.0))
-        except (KeyError, TypeError, ValueError):
-            print('%s  manager | temperature payload missing fields: %r' % (stamp(), payload))
+        temperature = _number(data, 'temperature', cfg.VALID_TEMP_RANGE)
+        if temperature is None:
+            print('%s  manager | implausible temperature ignored: %r' % (stamp(), payload))
             return
+        self.temperature = temperature
+        # Humidity is optional; keep the previous value rather than inventing 0.
+        humidity = _number(data, 'humidity', cfg.VALID_HUM_RANGE)
+        if humidity is not None:
+            self.humidity = humidity
         self.last_temp_time = time.time()
 
     def _handle_temp_b(self, payload):
         data = parse_json(payload, {})
-        try:
-            self.temperature_b = float(data['temperature'])
-            self.last_temp_b_time = time.time()
-        except (KeyError, TypeError, ValueError):
-            print('%s  manager | malformed probe B payload: %r' % (stamp(), payload))
+        value = _number(data, 'temperature', cfg.VALID_TEMP_RANGE)
+        if value is None:
+            return
+        self.temperature_b = value
+        self.last_temp_b_time = time.time()
 
     def _handle_ambient(self, payload):
         data = parse_json(payload, {})
-        try:
-            self.ambient = float(data['ambient'])
-            self.last_ambient_time = time.time()
-        except (KeyError, TypeError, ValueError):
-            print('%s  manager | malformed ambient payload: %r' % (stamp(), payload))
+        value = _number(data, 'ambient', cfg.VALID_TEMP_RANGE)
+        if value is None:
+            return
+        self.ambient = value
+        self.last_ambient_time = time.time()
 
     def _handle_current(self, payload):
-        data = parse_json(payload, {})
-        try:
-            self.compressor_current = float(data['current'])
-        except (KeyError, TypeError, ValueError):
-            pass
+        value = _number(parse_json(payload, {}), 'current', cfg.VALID_CURRENT_RANGE)
+        if value is not None:
+            self.compressor_current = value
 
     def _handle_fan_rpm(self, payload):
-        data = parse_json(payload, {})
-        try:
-            self.fan_rpm = float(data['rpm'])
-        except (KeyError, TypeError, ValueError):
-            pass
+        value = _number(parse_json(payload, {}), 'rpm', cfg.VALID_RPM_RANGE)
+        if value is not None:
+            self.fan_rpm = value
 
     def _handle_badge(self, payload):
         data = parse_json(payload, {})
@@ -172,10 +261,16 @@ class ColdChainManager:
         if not operator_id:
             return
         name = data.get('name') or operator_id
-        self.last_badge = (operator_id, name, time.time())
-        self._emit_event(cfg.LEVEL_INFO, 'BADGE_SCAN',
-                         'Badge scanned by %s (%s)' % (name, operator_id),
-                         operator=name)
+        authorised = bool(data.get('authorised', True))
+        self.last_badge = (operator_id, name, time.time(), authorised)
+        if authorised:
+            self._journal_event(cfg.LEVEL_INFO, 'BADGE_SCAN',
+                                'Badge scanned by %s (%s)' % (name, operator_id),
+                                operator=name, device='badge')
+        else:
+            self._journal_event(cfg.LEVEL_WARNING, 'BADGE_REJECTED',
+                                'Unrecognised badge %s presented at the door'
+                                % operator_id, device='badge')
 
     def _handle_door(self, payload):
         data = parse_json(payload, {})
@@ -189,10 +284,12 @@ class ColdChainManager:
         self.door_open = is_open
 
     def _attribute_door(self):
-        """Name whoever scanned a badge recently enough to own this opening."""
+        """Name whoever scanned a valid badge recently enough to own this opening."""
         if self.last_badge is None:
             return cfg.UNKNOWN_OPERATOR
-        _operator_id, name, scanned_at = self.last_badge
+        _operator_id, name, scanned_at, authorised = self.last_badge
+        if not authorised:
+            return cfg.UNKNOWN_OPERATOR
         if time.time() - scanned_at > cfg.BADGE_VALID_SECONDS:
             return cfg.UNKNOWN_OPERATOR
         return name
@@ -200,51 +297,126 @@ class ColdChainManager:
     def _handle_power(self, payload):
         data = parse_json(payload, {})
         source = str(data.get('source', 'MAINS')).upper()
+        if source not in ('MAINS', 'BATTERY'):
+            return
         if source == 'BATTERY' and self.power_source != 'BATTERY':
             self.battery_since = time.time()
         elif source != 'BATTERY':
             self.battery_since = None
         self.power_source = source
-        try:
-            self.battery = float(data.get('battery', self.battery))
-        except (TypeError, ValueError):
-            pass
+        battery = _number(data, 'battery', cfg.VALID_BATTERY_RANGE)
+        if battery is not None:
+            self.battery = battery
 
     def _handle_mode(self, payload):
-        mode = payload.strip().upper()
-        if mode in (MODE_MONITORING, MODE_MAINTENANCE) and mode != self.mode:
-            self.mode = mode
-            self._emit_event(cfg.LEVEL_INFO, 'MODE',
-                             'System mode changed to %s' % mode)
+        data = parse_json(payload)
+        if data:
+            mode = str(data.get('mode', '')).upper()
+            operator = data.get('operator') or cfg.DEFAULT_OPERATOR
+        else:
+            mode = payload.strip().upper()
+            operator = cfg.DEFAULT_OPERATOR
+        if mode not in (MODE_MONITORING, MODE_MAINTENANCE) or mode == self.mode:
+            return
+        self.mode = mode
+        self.mode_since = time.time() if mode == MODE_MAINTENANCE else None
+        self.mode_operator = operator if mode == MODE_MAINTENANCE else None
+        self._journal_event(cfg.LEVEL_INFO, 'MODE',
+                            'System mode changed to %s by %s' % (mode, operator),
+                            operator=operator)
+
+    def _handle_sim_status(self, payload):
+        """Devices announce which faults they currently have armed."""
+        data = parse_json(payload, {})
+        device_id = data.get('device')
+        if not device_id:
+            return
+        faults = data.get('faults') or []
+        if faults:
+            self.simulated_faults[device_id] = list(faults)
+        else:
+            self.simulated_faults.pop(device_id, None)
+
+    def _handle_incident_command(self, payload):
+        data = parse_json(payload, {})
+        action = str(data.get('action', '')).lower()
+        incident_id = data.get('id')
+        operator = data.get('operator') or cfg.DEFAULT_OPERATOR
+        if action in ('acknowledge', 'resolve') and incident_id is not None:
+            self._journal.append(('incident_cmd', (action, incident_id, operator)))
 
     # ------------------------------------------------------------------
     # Alert bookkeeping
     # ------------------------------------------------------------------
+    def _is_simulated(self, device_id):
+        return bool(device_id and self.simulated_faults.get(device_id))
+
     def _raise_alert(self, code, level, message, operator=None):
         """Report a condition. Only writes when the level for this code changes."""
         if self.active_alerts.get(code) == level:
             return
         self.active_alerts[code] = level
-        self._emit_event(level, code, message, operator)
+        device_id = CODE_DEVICE.get(code)
+        self._journal_event(level, code, message, operator, device_id)
+        if level != cfg.LEVEL_INFO:
+            self._journal.append(('incident_open', {
+                'code': code, 'severity': level, 'device': device_id,
+                'message': message, 'root_cause': self.diagnosis or None,
+                'simulated': self._is_simulated(device_id),
+            }))
 
     def _clear_alert(self, code, message, operator=None):
         if code not in self.active_alerts:
             return
         del self.active_alerts[code]
-        self._emit_event(cfg.LEVEL_INFO, code + '_CLEARED', message, operator)
+        self._journal_event(cfg.LEVEL_INFO, code + '_CLEARED', message, operator,
+                            CODE_DEVICE.get(code))
+        self._journal.append(('incident_close', code))
 
-    def _emit_event(self, level, code, message, operator=None):
-        suffix = ('  [%s]' % operator) if operator else ''
-        print('%s  manager | %-7s %-22s %s%s'
-              % (stamp(), level, code, message, suffix))
-        db.insert_event(level, code, message, operator)
-        self.mqtt.publish_json(cfg.TOPIC_ALERT, {
-            'level': level,
-            'code': code,
-            'message': message,
-            'operator': operator,
+    def _journal_event(self, level, code, message, operator=None, device=None):
+        """Queue an event. The manager loop does the disk and network work."""
+        self._journal.append(('event', {
+            'level': level, 'code': code, 'message': message,
+            'operator': operator, 'device': device,
+            'simulated': self._is_simulated(device),
             'ts': db.now_string(),
-        })
+        }))
+
+    def _flush_journal(self):
+        """Run queued database writes and publishes on the manager's own thread."""
+        while True:
+            with self.lock:
+                if not self._journal:
+                    return
+                kind, payload = self._journal.popleft()
+            try:
+                if kind == 'event':
+                    self._write_event(payload)
+                elif kind == 'incident_open':
+                    db.open_incident(**payload)
+                elif kind == 'incident_close':
+                    db.close_incident(payload)
+                elif kind == 'incident_cmd':
+                    action, incident_id, operator = payload
+                    if action == 'acknowledge':
+                        db.acknowledge_incident(incident_id, operator)
+                    else:
+                        db.resolve_incident(incident_id, operator)
+                    print('%s  manager | incident %s %sd by %s'
+                          % (stamp(), incident_id, action, operator))
+            except Exception:
+                print('%s  manager | journal entry failed (%s):\n%s'
+                      % (stamp(), kind, traceback.format_exc()))
+
+    def _write_event(self, record):
+        suffix = ('  [%s]' % record['operator']) if record['operator'] else ''
+        flag = '  (SIMULATED)' if record['simulated'] else ''
+        print('%s  manager | %-8s %-24s %s%s%s'
+              % (stamp(), record['level'], record['code'], record['message'],
+                 suffix, flag))
+        db.insert_event(record['level'], record['code'], record['message'],
+                        record['operator'], record['device'], record['simulated'])
+        self.mqtt.publish_json(cfg.TOPIC_ALERT, record)
 
     # ------------------------------------------------------------------
     # Rule evaluation
@@ -252,69 +424,68 @@ class ColdChainManager:
     def evaluate(self):
         now = time.time()
         with self.lock:
-            levels = [cfg.LEVEL_INFO]
             sensor_state = self._check_sensor(now)
 
             if sensor_state == SENSOR_ONLINE:
-                levels.append(self._check_temperature(now))
-                levels.append(self._check_excursion(now))
-                levels.append(self._check_humidity())
-            elif sensor_state == SENSOR_OFFLINE:
-                levels.append(cfg.LEVEL_ALARM)
+                self._check_temperature(now)
+                self._check_excursion(now)
+                self._check_humidity()
             # SENSOR_WAITING contributes nothing: the system has only just
-            # started and has not had a chance to hear from the sensor yet.
+            # started and has not had a chance to hear from the sensor yet, and
+            # SENSOR_OFFLINE has already raised its own alert.
 
-            levels.append(self._check_probe_agreement(now))
-            levels.append(self._check_ambient(now))
-            levels.append(self._check_door(now))
-            levels.append(self._check_power(now))
-            levels.append(self._check_compressor_current(now))
-            levels.append(self._check_fan_rpm(now))
+            self._check_probe_agreement(now)
+            self._check_ambient(now)
+            self._check_door(now)
+            self._check_power(now)
+            self._check_compressor_current(now)
+            self._check_fan_rpm(now)
+            self._check_connectivity(now)
+            self._check_device_liveness(now)
 
-            self.overall_level = cfg.worst(*levels)
+            # The unit's severity is simply the worst condition still active.
+            # Deriving it from the alert set rather than from what each check
+            # happened to return this tick means a condition that cannot be
+            # re-tested right now - a compressor fault while the compressor is
+            # off in its duty cycle - keeps the unit escalated until it clears.
+            self.overall_level = cfg.worst(cfg.LEVEL_INFO,
+                                           *self.active_alerts.values())
             if self.mode == MODE_MAINTENANCE:
-                # Servicing the unit is expected to break the rules; keep logging
-                # the conditions but do not escalate the unit to an alarm state.
+                # Servicing the unit is expected to break the rules. Conditions
+                # are still evaluated and logged, but the unit is not escalated.
                 self.overall_level = cfg.LEVEL_INFO
 
             self.diagnosis = self._diagnose()
+            self._update_device_health(now)
             self._drive_actuators(now)
             snapshot = self._snapshot(now, sensor_state)
+            due_write = now - self._last_db_write >= cfg.DB_WRITE_INTERVAL_S
+            if due_write:
+                self._last_db_write = now
+                reading = self._reading_row()
 
+        self._flush_journal()
         self.mqtt.publish_json(cfg.TOPIC_STATUS, snapshot)
+        if due_write:
+            try:
+                db.insert_reading(**reading)
+            except Exception:
+                print('%s  manager | could not store reading:\n%s'
+                      % (stamp(), traceback.format_exc()))
 
-        if now - self._last_db_write >= cfg.DB_WRITE_INTERVAL_S:
-            self._last_db_write = now
-            db.insert_reading(
-                temperature=self.temperature,
-                temperature_b=self.temperature_b,
-                ambient=self.ambient,
-                humidity=self.humidity,
-                door_state='OPEN' if self.door_open else 'CLOSED',
-                operator=self.door_operator,
-                power_source=self.power_source,
-                battery_level=self.battery,
-                compressor=self.compressor,
-                compressor_current=self.compressor_current,
-                fan=self.fan,
-                fan_rpm=self.fan_rpm,
-                siren=self.siren,
-                alert_level=self.overall_level,
-            )
-
+    # -- individual rules ------------------------------------------------
     def _check_sensor(self, now):
-        """Report whether the sensor is alive, silent, or simply not heard from yet."""
+        """Report whether the primary probe is alive, silent, or not heard yet."""
         if self.last_temp_time is None:
-            # Grace period after start-up: the emulators may not be running yet.
             if now - self._started_at <= cfg.SENSOR_TIMEOUT_SECONDS:
-                return SENSOR_WAITING
-            self._raise_alert('SENSOR_OFFLINE', cfg.LEVEL_ALARM,
+                return SENSOR_WAITING   # grace period after start-up
+            self._raise_alert('SENSOR_OFFLINE', cfg.LEVEL_CRITICAL,
                               'No temperature data received since start-up')
             return SENSOR_OFFLINE
 
         silent_for = now - self.last_temp_time
         if silent_for > cfg.SENSOR_TIMEOUT_SECONDS:
-            self._raise_alert('SENSOR_OFFLINE', cfg.LEVEL_ALARM,
+            self._raise_alert('SENSOR_OFFLINE', cfg.LEVEL_CRITICAL,
                               'Temperature sensor silent for %d s' % int(silent_for))
             return SENSOR_OFFLINE
 
@@ -327,19 +498,30 @@ class ColdChainManager:
             return cfg.LEVEL_INFO
 
         if temp < cfg.TEMP_ALARM_MIN or temp > cfg.TEMP_ALARM_MAX:
-            self._raise_alert('TEMP_RANGE', cfg.LEVEL_ALARM,
+            self._raise_alert('TEMP_RANGE', cfg.LEVEL_CRITICAL,
                               'Temperature %.1f C is outside the hard limit %.0f-%.0f C'
                               % (temp, cfg.TEMP_ALARM_MIN, cfg.TEMP_ALARM_MAX))
-            return cfg.LEVEL_ALARM
+            return cfg.LEVEL_CRITICAL
 
         if temp < cfg.TEMP_TARGET_MIN or temp > cfg.TEMP_TARGET_MAX:
             self._raise_alert('TEMP_RANGE', cfg.LEVEL_WARNING,
                               'Temperature %.1f C left the %.0f-%.0f C storage band'
                               % (temp, cfg.TEMP_TARGET_MIN, cfg.TEMP_TARGET_MAX))
+            self._clear_alert('TEMP_APPROACHING', 'Superseded by a range warning')
             return cfg.LEVEL_WARNING
 
         self._clear_alert('TEMP_RANGE',
                           'Temperature back inside the storage band (%.1f C)' % temp)
+
+        # Inside the band, but close enough to the edge to be worth flagging.
+        margin = cfg.TEMP_APPROACH_MARGIN
+        if temp <= cfg.TEMP_TARGET_MIN + margin or temp >= cfg.TEMP_TARGET_MAX - margin:
+            self._raise_alert('TEMP_APPROACHING', cfg.LEVEL_WARNING,
+                              'Temperature %.1f C is approaching the edge of the '
+                              'storage band' % temp)
+            return cfg.LEVEL_WARNING
+        self._clear_alert('TEMP_APPROACHING',
+                          'Temperature comfortably inside the band (%.1f C)' % temp)
         return cfg.LEVEL_INFO
 
     def _check_excursion(self, now):
@@ -348,8 +530,7 @@ class ColdChainManager:
         if temp is None:
             return cfg.LEVEL_INFO
 
-        in_band = cfg.TEMP_TARGET_MIN <= temp <= cfg.TEMP_TARGET_MAX
-        if in_band:
+        if cfg.TEMP_TARGET_MIN <= temp <= cfg.TEMP_TARGET_MAX:
             if self.excursion_since is not None:
                 duration = int(now - self.excursion_since)
                 self.excursion_since = None
@@ -368,8 +549,8 @@ class ColdChainManager:
                        % (cfg.TEMP_TARGET_MIN, cfg.TEMP_TARGET_MAX, int(duration)))
             if cause:
                 message += '; ' + cause
-            self._raise_alert('TEMP_EXCURSION', cfg.LEVEL_ALARM, message)
-            return cfg.LEVEL_ALARM
+            self._raise_alert('TEMP_EXCURSION', cfg.LEVEL_CRITICAL, message)
+            return cfg.LEVEL_CRITICAL
         return cfg.LEVEL_INFO
 
     def _check_humidity(self):
@@ -377,9 +558,9 @@ class ColdChainManager:
         if hum is None:
             return cfg.LEVEL_INFO
         if hum > cfg.HUM_ALARM_MAX:
-            self._raise_alert('HUM_RANGE', cfg.LEVEL_ALARM,
+            self._raise_alert('HUM_RANGE', cfg.LEVEL_CRITICAL,
                               'Humidity %.0f %% - condensation risk' % hum)
-            return cfg.LEVEL_ALARM
+            return cfg.LEVEL_CRITICAL
         if hum < cfg.HUM_TARGET_MIN or hum > cfg.HUM_TARGET_MAX:
             self._raise_alert('HUM_RANGE', cfg.LEVEL_WARNING,
                               'Humidity %.0f %% is outside %.0f-%.0f %%'
@@ -391,12 +572,12 @@ class ColdChainManager:
     def _check_probe_agreement(self, now):
         """Two probes that disagree mean one is lying, and we cannot tell which."""
         if self.last_temp_b_time is None:
-            return cfg.LEVEL_INFO  # probe B has never reported; nothing to compare
+            return cfg.LEVEL_INFO
 
         silent_for = now - self.last_temp_b_time
         if silent_for > cfg.PROBE_B_TIMEOUT_SECONDS:
-            # Losing redundancy is not an emergency, but it must be visible:
-            # the unit is now running on a single unverified probe.
+            # Losing redundancy is not an emergency, but the unit is now running
+            # on a single unverified probe and that must be visible.
             self._raise_alert('PROBE_B_OFFLINE', cfg.LEVEL_WARNING,
                               'Probe B silent for %d s - redundancy lost'
                               % int(silent_for))
@@ -419,13 +600,12 @@ class ColdChainManager:
             self.probe_mismatch_since = now
             return cfg.LEVEL_INFO
 
-        # A brief disagreement is just noise; a sustained one is a failed probe.
         if now - self.probe_mismatch_since >= cfg.PROBE_DISAGREE_SECONDS:
-            self._raise_alert('PROBE_MISMATCH', cfg.LEVEL_ALARM,
+            self._raise_alert('PROBE_MISMATCH', cfg.LEVEL_CRITICAL,
                               'Probes disagree by %.1f C (A %.1f, B %.1f) - '
                               'readings cannot be trusted'
                               % (delta, self.temperature, self.temperature_b))
-            return cfg.LEVEL_ALARM
+            return cfg.LEVEL_CRITICAL
         return cfg.LEVEL_INFO
 
     def _check_ambient(self, now):
@@ -453,33 +633,38 @@ class ColdChainManager:
         drawing = current >= cfg.CURRENT_RUNNING_MIN_A
 
         if not settled:
-            # Nothing is judged during the grace period. A motor draws several
-            # times its running current for a second or two on start-up, and
-            # coasts down slowly afterwards; reacting to either would report a
-            # fault on every single compressor cycle.
+            # A motor draws several times its running current for a second or
+            # two on start-up and coasts down slowly afterwards; reacting to
+            # either would report a fault on every compressor cycle.
             return cfg.LEVEL_INFO
 
         if current > cfg.CURRENT_OVERLOAD_A:
-            self._raise_alert('COMPRESSOR_OVERLOAD', cfg.LEVEL_ALARM,
+            self._raise_alert('COMPRESSOR_OVERLOAD', cfg.LEVEL_CRITICAL,
                               'Compressor drawing %.1f A - above the %.1f A limit'
                               % (current, cfg.CURRENT_OVERLOAD_A))
-            return cfg.LEVEL_ALARM
+            return cfg.LEVEL_CRITICAL
         self._clear_alert('COMPRESSOR_OVERLOAD', 'Compressor current back to normal')
 
-        if self.compressor == 'ON' and not drawing:
-            self._raise_alert('COMPRESSOR_NO_CURRENT', cfg.LEVEL_ALARM,
-                              'Compressor commanded ON but drawing %.2f A - '
-                              'relay or motor failure' % current)
-            return cfg.LEVEL_ALARM
-        if self.compressor == 'OFF' and drawing:
-            self._raise_alert('COMPRESSOR_STUCK_ON', cfg.LEVEL_ALARM,
-                              'Compressor commanded OFF but drawing %.2f A - '
-                              'contacts welded closed' % current)
-            return cfg.LEVEL_ALARM
-
-        self._clear_alert('COMPRESSOR_NO_CURRENT',
-                          'Compressor is drawing current again')
-        self._clear_alert('COMPRESSOR_STUCK_ON', 'Compressor has stopped drawing')
+        # Each fault is only judged while the command that could disprove it is
+        # in force. A dead compressor draws nothing whether it was told to run
+        # or not, so clearing the fault just because the duty cycle turned it
+        # off would reopen and close the same incident every few minutes.
+        if self.compressor == 'ON':
+            if not drawing:
+                self._raise_alert('COMPRESSOR_NO_CURRENT', cfg.LEVEL_CRITICAL,
+                                  'Compressor commanded ON but drawing %.2f A - '
+                                  'relay or motor failure' % current)
+                return cfg.LEVEL_CRITICAL
+            self._clear_alert('COMPRESSOR_NO_CURRENT',
+                              'Compressor is drawing current again')
+        else:
+            if drawing:
+                self._raise_alert('COMPRESSOR_STUCK_ON', cfg.LEVEL_CRITICAL,
+                                  'Compressor commanded OFF but drawing %.2f A - '
+                                  'contacts welded closed' % current)
+                return cfg.LEVEL_CRITICAL
+            self._clear_alert('COMPRESSOR_STUCK_ON',
+                              'Compressor has stopped drawing')
         return cfg.LEVEL_INFO
 
     def _check_fan_rpm(self, now):
@@ -490,31 +675,35 @@ class ColdChainManager:
         rpm = self.fan_rpm
         settled = (now - self.fan_since) >= cfg.ACTUATOR_FAULT_SECONDS
         turning = rpm >= cfg.FAN_RPM_MIN
-
         if not settled:
             return cfg.LEVEL_INFO
 
-        if self.fan == 'ON' and not turning:
-            self._raise_alert('FAN_STALLED', cfg.LEVEL_ALARM,
-                              'Fan commanded ON but reading %d rpm - blocked or seized'
-                              % int(rpm))
-            return cfg.LEVEL_ALARM
-        self._clear_alert('FAN_STALLED', 'Fan is turning again')
+        # As with the compressor: a seized fan reads zero whether or not it was
+        # asked to spin, so its faults are only judged - and only cleared -
+        # while the relevant command is in force.
+        if self.fan == 'ON':
+            if not turning:
+                self._raise_alert('FAN_STALLED', cfg.LEVEL_CRITICAL,
+                                  'Fan commanded ON but reading %d rpm - '
+                                  'blocked or seized' % int(rpm))
+                return cfg.LEVEL_CRITICAL
+            self._clear_alert('FAN_STALLED', 'Fan is turning again')
 
-        if self.fan == 'OFF' and turning:
+            if rpm < cfg.FAN_RPM_DEGRADED:
+                # Still circulating, but not well. Service it before it fails.
+                self._raise_alert('FAN_DEGRADED', cfg.LEVEL_WARNING,
+                                  'Fan at %d rpm, below the %d rpm minimum - '
+                                  'bearing wear' % (int(rpm), cfg.FAN_RPM_DEGRADED))
+                return cfg.LEVEL_WARNING
+            self._clear_alert('FAN_DEGRADED', 'Fan speed back to normal')
+            return cfg.LEVEL_INFO
+
+        if turning:
             self._raise_alert('FAN_STUCK_ON', cfg.LEVEL_WARNING,
                               'Fan commanded OFF but still turning at %d rpm'
                               % int(rpm))
             return cfg.LEVEL_WARNING
         self._clear_alert('FAN_STUCK_ON', 'Fan has stopped')
-
-        if self.fan == 'ON' and rpm < cfg.FAN_RPM_DEGRADED:
-            # Still circulating, but not well. Worth servicing before it fails.
-            self._raise_alert('FAN_DEGRADED', cfg.LEVEL_WARNING,
-                              'Fan at %d rpm, below the %d rpm minimum - '
-                              'bearing wear' % (int(rpm), cfg.FAN_RPM_DEGRADED))
-            return cfg.LEVEL_WARNING
-        self._clear_alert('FAN_DEGRADED', 'Fan speed back to normal')
         return cfg.LEVEL_INFO
 
     def _check_door(self, now):
@@ -535,10 +724,10 @@ class ColdChainManager:
 
         open_for = now - self.door_since
         if open_for >= cfg.DOOR_ALARM_SECONDS:
-            self._raise_alert('DOOR_OPEN', cfg.LEVEL_ALARM,
+            self._raise_alert('DOOR_OPEN', cfg.LEVEL_CRITICAL,
                               'Door has been open for %d s' % int(open_for),
                               operator=operator)
-            return cfg.LEVEL_ALARM
+            return cfg.LEVEL_CRITICAL
         if open_for >= cfg.DOOR_WARNING_SECONDS:
             self._raise_alert('DOOR_OPEN', cfg.LEVEL_WARNING,
                               'Door open for %d s' % int(open_for),
@@ -549,10 +738,10 @@ class ColdChainManager:
     def _check_power(self, now):
         level = cfg.LEVEL_INFO
 
-        if self.battery <= cfg.BATTERY_ALARM_PERCENT and self.power_source == 'BATTERY':
-            self._raise_alert('BATTERY_LOW', cfg.LEVEL_ALARM,
+        if self.power_source == 'BATTERY' and self.battery <= cfg.BATTERY_ALARM_PERCENT:
+            self._raise_alert('BATTERY_LOW', cfg.LEVEL_CRITICAL,
                               'Backup battery at %.0f %%' % self.battery)
-            level = cfg.LEVEL_ALARM
+            level = cfg.LEVEL_CRITICAL
         else:
             self._clear_alert('BATTERY_LOW', 'Backup battery recovered')
 
@@ -568,6 +757,72 @@ class ColdChainManager:
 
         return level
 
+    def _check_connectivity(self, now):
+        """The manager's own link to the broker."""
+        if self._disconnected_since is None:
+            self._clear_alert('MQTT_DOWN', 'Broker connection restored')
+            return cfg.LEVEL_INFO
+        down_for = now - self._disconnected_since
+        if down_for >= cfg.MQTT_DOWN_SECONDS:
+            self._raise_alert('MQTT_DOWN', cfg.LEVEL_CRITICAL,
+                              'No broker connection for %d s - telemetry is stale'
+                              % int(down_for))
+            return cfg.LEVEL_CRITICAL
+        return cfg.LEVEL_INFO
+
+    def _check_device_liveness(self, now):
+        """Any scheduled publisher that has gone quiet, beyond the primary probe."""
+        stale = []
+        for device in registry.telemetry_devices():
+            if device.id in ('temp', 'temp_b'):
+                continue     # these have their own, more specific rules
+            seen = self.device_seen.get(device.id)
+            if seen is None:
+                continue     # never heard from; start-up, not a failure
+            if now - seen > device.stale_after:
+                stale.append((device, now - seen))
+
+        if not stale:
+            self._clear_alert('DEVICE_STALE', 'All devices are reporting again')
+            return cfg.LEVEL_INFO
+
+        summary = ', '.join('%s (%ds)' % (d.label, int(age)) for d, age in stale)
+        level = cfg.LEVEL_CRITICAL if len(stale) > 1 else cfg.LEVEL_WARNING
+        self._raise_alert('DEVICE_STALE', level,
+                          'No telemetry from %s' % summary)
+        return level
+
+    # ------------------------------------------------------------------
+    # Device health
+    # ------------------------------------------------------------------
+    def _update_device_health(self, now):
+        critical_devices = set()
+        warning_devices = set()
+        for code, level in self.active_alerts.items():
+            device_id = CODE_DEVICE.get(code)
+            if not device_id:
+                continue
+            if level == cfg.LEVEL_CRITICAL:
+                critical_devices.add(device_id)
+            elif level == cfg.LEVEL_WARNING:
+                warning_devices.add(device_id)
+
+        for device in registry.DEVICES:
+            seen = self.device_seen.get(device.id)
+            if seen is None:
+                health = registry.OFFLINE
+            elif device.period_s > 0 and (now - seen) > device.stale_after:
+                health = registry.OFFLINE
+            elif device.id in critical_devices:
+                health = registry.FAULT
+            elif device.id in warning_devices or self.simulated_faults.get(device.id):
+                health = registry.DEGRADED
+            elif self.mode == MODE_MAINTENANCE:
+                health = registry.MAINTENANCE
+            else:
+                health = registry.CONNECTED
+            self.device_health[device.id] = health
+
     # ------------------------------------------------------------------
     # Root cause
     # ------------------------------------------------------------------
@@ -579,11 +834,8 @@ class ColdChainManager:
         separate a facility problem from a unit problem from a door left open -
         three situations that need three different people to respond.
         """
-        if self.temperature is None:
+        if self.temperature is None or self.temperature <= cfg.TEMP_TARGET_MAX:
             return ''
-        if self.temperature <= cfg.TEMP_TARGET_MAX:
-            return ''
-
         if self.door_open:
             return 'the door is open'
         if self.ambient is not None and self.ambient >= cfg.AMBIENT_WARNING_C:
@@ -624,7 +876,7 @@ class ColdChainManager:
             elif self.humidity is not None and self.humidity > cfg.HUM_TARGET_MAX:
                 fan = 'ON'
 
-        siren = 'ON' if self.overall_level == cfg.LEVEL_ALARM else 'OFF'
+        siren = 'ON' if self.overall_level == cfg.LEVEL_CRITICAL else 'OFF'
 
         refresh = (now - self._last_actuator_push) >= ACTUATOR_REFRESH_SECONDS
         if refresh:
@@ -637,15 +889,35 @@ class ColdChainManager:
             changed = new_value != getattr(self, attr)
             if changed:
                 setattr(self, attr, new_value)
-                # Restart the grace period: the feedback sensors are only
-                # allowed to contradict a command once the hardware has had
-                # time to act on it.
+                # Restart the grace period: the feedback sensors may only
+                # contradict a command once the hardware has had time to act.
                 if attr == 'compressor':
                     self.compressor_since = now
                 elif attr == 'fan':
                     self.fan_since = now
             if changed or refresh:
                 self.mqtt.publish(topic, new_value)
+
+    # ------------------------------------------------------------------
+    # Outbound state
+    # ------------------------------------------------------------------
+    def _reading_row(self):
+        return {
+            'temperature': self.temperature,
+            'temperature_b': self.temperature_b,
+            'ambient': self.ambient,
+            'humidity': self.humidity,
+            'door_state': 'OPEN' if self.door_open else 'CLOSED',
+            'operator': self.door_operator,
+            'power_source': self.power_source,
+            'battery_level': self.battery,
+            'compressor': self.compressor,
+            'compressor_current': self.compressor_current,
+            'fan': self.fan,
+            'fan_rpm': self.fan_rpm,
+            'siren': self.siren,
+            'alert_level': self.overall_level,
+        }
 
     def _snapshot(self, now, sensor_state):
         door_seconds = int(now - self.door_since) if self.door_since else 0
@@ -654,8 +926,18 @@ class ColdChainManager:
         if self.temperature is not None and self.temperature_b is not None:
             probe_delta = round(abs(self.temperature - self.temperature_b), 2)
 
+        ages = {}
+        for device_id, seen in self.device_seen.items():
+            ages[device_id] = round(now - seen, 1)
+
+        counts = collections.Counter(self.device_health.values())
+        severities = collections.Counter(
+            level for level in self.active_alerts.values()
+            if level != cfg.LEVEL_INFO)
+
         return {
             'ts': db.now_string(),
+            'uptime_s': int(now - self._started_at),
             'temperature': self.temperature,
             'temperature_b': self.temperature_b,
             'probe_delta': probe_delta,
@@ -672,12 +954,21 @@ class ColdChainManager:
             'fan_rpm': self.fan_rpm,
             'siren': self.siren,
             'mode': self.mode,
+            'mode_since': self.mode_since and db.now_string(),
+            'mode_operator': self.mode_operator,
             'level': self.overall_level,
             'diagnosis': self.diagnosis,
             'excursion_seconds': excursion_seconds,
             'sensor_state': sensor_state,
             'sensor_online': sensor_state == SENSOR_ONLINE,
+            'broker_connected': self._disconnected_since is None,
             'active_alerts': sorted(self.active_alerts.keys()),
+            'alert_counts': dict(severities),
+            'device_health': dict(self.device_health),
+            'device_age_s': ages,
+            'device_counts': dict(counts),
+            'simulated_faults': {k: list(v) for k, v in self.simulated_faults.items()},
+            'simulation_active': bool(self.simulated_faults),
         }
 
     # ------------------------------------------------------------------
@@ -687,10 +978,17 @@ class ColdChainManager:
         db.init_db()
         print('%s  manager | database ready: %s' % (stamp(), db.DB_FILE))
 
+        # Any incident left open by a previous run is stale; the conditions will
+        # re-raise themselves within a second if they are still true.
+        for incident in db.active_incidents():
+            db.close_incident(incident['code'])
+
         self.mqtt.subscribe(cfg.TOPIC_TEMP, cfg.TOPIC_TEMP_B, cfg.TOPIC_AMBIENT,
                             cfg.TOPIC_DOOR, cfg.TOPIC_POWER, cfg.TOPIC_BADGE,
                             cfg.TOPIC_CURRENT, cfg.TOPIC_FAN_RPM,
-                            cfg.TOPIC_MODE_CMD)
+                            cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_FAN_STS,
+                            cfg.TOPIC_SIREN_STS, cfg.TOPIC_MODE_CMD,
+                            cfg.TOPIC_SIM_STS_WILDCARD, cfg.TOPIC_INCIDENT_CMD)
         self.mqtt.start()
         print('%s  manager | connecting to %s:%s'
               % (stamp(), cfg.BROKER_HOST, cfg.BROKER_PORT))
@@ -698,7 +996,12 @@ class ColdChainManager:
         last_summary = 0.0
         try:
             while self._running:
-                self.evaluate()
+                try:
+                    self.evaluate()
+                except Exception:
+                    # A rule bug must not kill the loop; log it and carry on.
+                    print('%s  manager | evaluation failed:\n%s'
+                          % (stamp(), traceback.format_exc()))
                 if time.time() - last_summary >= 10:
                     last_summary = time.time()
                     self._print_summary()
@@ -712,8 +1015,9 @@ class ColdChainManager:
         def number(value, fmt, suffix=''):
             return '--' if value is None else (fmt % value) + suffix
 
-        print('%s  manager | %-7s A=%-7s B=%-7s amb=%-6s door=%-6s '
-              'comp=%-3s %-6s fan=%-3s %-8s siren=%s'
+        offline = [k for k, v in self.device_health.items() if v == registry.OFFLINE]
+        print('%s  manager | %-8s A=%-7s B=%-7s amb=%-6s door=%-6s '
+              'comp=%-3s %-6s fan=%-3s %-8s siren=%-3s devices=%d/%d'
               % (stamp(), self.overall_level,
                  number(self.temperature, '%.1f', 'C'),
                  number(self.temperature_b, '%.1f', 'C'),
@@ -721,12 +1025,17 @@ class ColdChainManager:
                  'OPEN' if self.door_open else 'CLOSED',
                  self.compressor, number(self.compressor_current, '%.2f', 'A'),
                  self.fan, number(self.fan_rpm, '%.0f', 'rpm'),
-                 self.siren))
+                 self.siren,
+                 len(registry.DEVICES) - len(offline), len(registry.DEVICES)))
         if self.diagnosis:
             print('%s  manager | cause: %s' % (stamp(), self.diagnosis))
 
     def shutdown(self):
         self._running = False
+        try:
+            self._flush_journal()
+        except Exception:
+            pass
         # Leave the hardware in a safe, quiet state.
         self.mqtt.publish(cfg.TOPIC_SIREN_CMD, 'OFF')
         self.mqtt.publish(cfg.TOPIC_COMPRESSOR_CMD, 'OFF')

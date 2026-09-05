@@ -147,14 +147,14 @@ PYTHON=/usr/local/bin/python3.11 run/macos/start_all.command
 
 ### Which one to record
 
-Use `start_panel`. Two windows — the device panel and the main GUI — fit side by
-side on one screen, so every control you press and its effect on the dashboard
-are visible in the same frame.
+Use `start_panel`. Two windows — the device panel and the console — fit side by
+side on one screen, so every fault you arm and its effect on the dashboard are
+visible in the same frame.
 
 ![Device panel](docs/screenshots/08_device_panel.png)
 
-Show the eight-process mode briefly when you explain the architecture, so it is
-clear the devices really are independent clients rather than one program.
+Show the thirteen-process mode briefly when you explain the architecture, so it
+is clear the devices really are independent clients rather than one program.
 
 ### Starting one component at a time
 
@@ -194,185 +194,146 @@ Or all eleven devices in one window:
 
 ## 4. What you should see
 
-Eight windows open. In each emulator window the indicator at the top right turns
-green and reads `● CONNECTED`. In the main GUI the pill at the top reads
-**ALL NORMAL** in green, and the line under the broker address reads
-`● connected`.
+Two windows open in panel mode: the device panel and the console.
+
+In the device panel every card's indicator turns green and reads `● CONNECTED`.
+In the console the top bar reads `● CONNECTED`, the dashboard banner is green
+and says **NORMAL — Storage conditions are within specification**, and the
+navigation rail footer reads *No active alerts*.
 
 Leave it alone for about a minute. The unit should settle into its cooling
 cycle:
 
 * temperature oscillating roughly between **3.5 °C and 6.5 °C**,
-* the **COMPRESSOR** and **FAN** cards switching on and off together,
-* the trend chart drawing a wave that stays inside the green band.
+* the **Compressor** and **Fan** cards switching on together, each showing a
+  measured value that agrees with its commanded state,
+* the temperature history drawing a wave inside the green band.
 
-If that happens, the entire chain works: sensor → broker → manager → relay →
-back to the sensor.
+On the **Devices** page all eleven devices read `CONNECTED`.
+
+If that happens the entire chain works: sensor → broker → manager → relay → back
+to the sensor.
 
 The data manager's terminal prints a summary line every ten seconds:
 
 ```
-16:34:08  manager | INFO    temp=6.3 C   hum=45 %  door=CLOSED power=MAINS   comp=ON  fan=ON  siren=OFF
+09:14:08  manager | INFO     A=6.3C   B=6.5C   amb=22.1C  door=CLOSED comp=ON  4.21A  fan=ON  1447rpm  siren=OFF devices=11/11
 ```
+
+Every device is listed as reporting. If that count drops, the Devices page names
+which one went quiet.
 
 ---
 
 ## 5. Demo walkthrough
 
-Each step below triggers a different rule. Run them in order for a recording.
+Every fault below is armed from the console's **Simulations** page — you no
+longer touch the individual emulator windows. Each one changes what the emulated
+hardware really does, so the alarm that follows is produced by the same rules a
+genuine failure would trigger, and everything it causes is labelled `SIMULATED`.
 
 ### Step 1 — Normal operation *(about 1 minute)*
 
-Show the cooling cycle described above. Point out the hysteresis: the compressor
-starts near 6.5 °C and stops near 3.5 °C rather than switching constantly at the
-8 °C limit.
+Leave it alone. The temperature oscillates between roughly 3.5 °C and 6.5 °C,
+the compressor and fan switch together, and the dashboard banner stays green
+with **0 critical, 0 warnings**. Point out the hysteresis: the compressor starts
+near 6.5 °C and stops near 3.5 °C rather than chattering at the 8 °C limit.
 
-### Step 2 — Door left open *(about 50 seconds)*
+On the **Devices** page all eleven devices read `CONNECTED` with a freshness of
+a few seconds.
 
-In the **Door Sensor** window press `OPEN DOOR`.
+### Step 2 — One-click scenarios *(the fastest demonstration)*
 
-| Time | What happens |
-|---|---|
-| immediately | The compressor is forced off — real units stop cooling with the door open |
-| ~20 s | `WARNING · DOOR_OPEN` appears in the event log; the door panel turns amber |
-| ~45 s | `ALARM · DOOR_OPEN`; the panel turns red, the **SIREN** card lights up, and the status pill turns red |
-
-Press `CLOSE DOOR`. An `INFO · DOOR_OPEN_CLEARED` event appears and everything
-returns to normal.
-
-### Step 3 — Cooling failure *(about 2 minutes)*
-
-This is the strongest demonstration, because it shows the two temperature rules
-firing independently.
-
-In the **Temperature / Humidity Sensor** window tick
-**Inject cooling failure**.
+Open **Simulations**. The six scenario cards each state what they arm and what
+you should expect. **Compressor Failure** is the strongest:
 
 | Time | What happens |
 |---|---|
-| — | The compressor is still commanded ON, but the temperature keeps climbing |
-| above 8 °C | `WARNING · TEMP_RANGE` — left the storage band |
-| above 10 °C | `ALARM · TEMP_RANGE` — past the hard limit |
-| 90 s outside the band | `ALARM · TEMP_EXCURSION` — a *separate* alarm about duration, not value |
+| immediately | The compressor card still shows `ON`, but its measured line drops to `0.00 A` and turns red — *contradicts the command* |
+| ~15 s | `CRITICAL · COMPRESSOR_NO_CURRENT` — relay or motor failure |
+| — | The temperature starts climbing because cooling is genuinely lost |
+| ~90 s outside the band | `CRITICAL · TEMP_EXCURSION`, with the assessment naming the compressor |
 
-Untick the box. The compressor regains control, the temperature falls, and each
-condition clears with its own event — including how long the excursion lasted.
+### Step 3 — The failure nothing else would catch
 
-### Step 4 — Power cut *(about 1.5 minutes)*
+Arm **Fan Tachometer → Fan failure (stalled)**. After the 15 s grace period a
+`CRITICAL · FAN_STALLED` incident appears **while the temperature still reads
+perfectly normal**. Without the tachometer this failure is invisible until the
+stock at the top of the cabinet has already spoiled.
 
-In the **Power Supply Sensor** window press `SIMULATE POWER CUT`.
+Then clear it and arm **Low RPM (worn bearing)** instead: the fan still turns,
+so no critical — but a `WARNING · FAN_DEGRADED` appears. That is predictive
+maintenance: service it now, not after it seizes.
 
-| Time | What happens |
-|---|---|
-| immediately | The power panel switches to `BATTERY` and the battery bar starts draining |
-| 60 s | `WARNING · POWER_BATTERY` |
-| battery ≤ 20 % | `ALARM · BATTERY_LOW` |
+### Step 4 — A probe you cannot trust
 
-Press `RESTORE MAINS` to recover.
+Arm **Temperature Probe B → Probe drift**. Nothing is out of range and the
+reading stays plausible, yet after 30 s of disagreement:
 
-### Step 5 — Sensor failure *(about 30 seconds)*
+`CRITICAL · PROBE_MISMATCH — readings cannot be trusted`
 
-In the probe A panel untick **Sensor online (publishing)**. The emulator stops
-transmitting while its window stays open — a stuck sensor, not a crashed one.
+The alarm never says which probe is wrong, because nothing in the system can
+know. That uncertainty *is* the alarm.
 
-After 25 s: `ALARM · SENSOR_OFFLINE`, and the status pill reads
-**SENSOR OFFLINE**. Tick the box again to recover.
+### Step 5 — Whose fault is it?
 
-### Step 6 — A probe you cannot trust *(about 45 seconds)*
+Arm **Ambient Room Sensor → Building cooling failure**. The storeroom climbs
+past 30 °C, and because the ambient probe feeds probe A's thermal model the
+cabinet genuinely starts losing ground. Read the assessment on the dashboard:
 
-This is the case a single-probe system cannot detect at all: nothing is out of
-range, and the reading is still wrong.
-
-In the **Temperature Probe B** panel tick **Inject probe drift**. Probe B climbs
-away from probe A while both stay inside plausible values.
-
-| Time | What happens |
-|---|---|
-| — | The `probe B` tile on the dashboard shows a growing `Δ` |
-| Δ over 2 °C | The tile turns red |
-| 30 s later | `ALARM · PROBE_MISMATCH` — *readings cannot be trusted* |
-
-Untick it. Point out that the alarm never says which probe is wrong, because
-nothing in the system can know — that uncertainty *is* the alarm.
-
-**Freeze reading (dead probe)** demonstrates the same rule against the other
-classic failure: a probe that keeps reporting a perfectly reasonable number that
-stopped being true.
-
-### Step 7 — Hardware that ignores its command *(about 40 seconds)*
-
-Every rule so far believed the relays. These two do not.
-
-In the **Compressor Current Sensor** panel tick **Inject open circuit**. The
-relay still reports `ON`, and the compressor card on the dashboard still shows
-its `ON` pill — but the measured line under it drops to `0.00 A` and turns red.
-
-After 15 s: `ALARM · COMPRESSOR_NO_CURRENT — relay or motor failure`.
-
-Do the same with **Inject welded relay**: wait for the compressor to be commanded
-off, and the current stays up. `ALARM · COMPRESSOR_STUCK_ON — contacts welded
-closed`. A refrigerator stuck cooling will freeze its contents, which spoils
-vaccines just as thoroughly as overheating.
-
-### Step 8 — The failure nothing else would catch *(about 40 seconds)*
-
-In the **Fan Tachometer** panel tick **Inject worn bearing**. The fan still
-turns, so no alarm — but at 650 rpm it is below the 900 rpm minimum, and after
-15 s a `WARNING · FAN_DEGRADED` appears. This is predictive maintenance: service
-it now, not after it seizes.
-
-Then tick **Inject stall** instead: `ALARM · FAN_STALLED`. Note that the
-temperature is still perfectly normal. Without the tachometer this failure is
-invisible until the stock at the top of the cabinet has already spoiled.
-
-### Step 9 — Whose fault is it? *(about 40 seconds)*
-
-In the **Ambient Room Sensor** panel drag the slider above 30 °C.
-
-`WARNING · ROOM_HOT` appears, and because the ambient probe feeds probe A's
-thermal model, the cabinet genuinely starts losing ground. When the excursion
-alarm fires, read the **assessment** tile on the dashboard:
-
-> *the storeroom is at 34 C — this is a building cooling problem, not a unit
+> *the storeroom is at 34 °C — this is a building cooling problem, not a unit
 > fault*
 
 That sentence sends a building engineer instead of a refrigeration technician.
-Compare it with the assessment during step 3, where the same excursion was
-diagnosed as the compressor's fault.
+Compare it with step 2, where the same excursion was diagnosed as the
+compressor's fault.
 
-### Step 10 — Who opened the door *(about 40 seconds)*
+### Step 6 — Access control
 
-Open the door **without** scanning a badge first: `WARNING ·
-UNAUTHORISED_ACCESS`, and the *last door opened by* tile reads **no badge** in
-amber.
+Arm **Door Sensor → Door forced open**. A `WARNING · UNAUTHORISED_ACCESS`
+appears immediately and the *last opened by* tile reads **no badge**. The door
+warning follows at 20 s and becomes critical at 45 s.
 
-Close it, press one of the three badge buttons in the **RFID Badge Reader**
-panel, then open the door again. Now the tile shows the name, and the door
-events in the log and in the History tab carry the operator beside them.
+Clear it, press a badge button on the RFID reader panel, then arm it again — the
+incident now carries the operator's name.
 
-### Step 11 — Maintenance mode
+### Step 7 — Connectivity
 
-Press **Maintenance mode** at the top right of the main GUI, then trigger any
-fault from the steps above. Conditions are still logged, but the unit is not
-escalated to alarm and the siren stays silent. Press **Leave maintenance** to
-return.
+Every device supports three connectivity faults. Arm **Missing telemetry** on
+the Power Supply Sensor: after roughly three missed slots the Devices page marks
+it `OFFLINE`, and a `DEVICE_STALE` incident opens naming it.
 
-### Step 12 — The stored record
+**MQTT disconnect** drops that device's broker connection entirely. It heals
+itself after 30 seconds, because a device with its link cut cannot hear the
+command to restore it — the panel shows the countdown.
 
-Open the **History & Reports** tab.
+### Step 8 — Incident lifecycle
 
-* The tiles summarise the last 24 hours: sample count, min / max / average
-  temperature, minutes spent out of band, door openings, warning and alarm
-  counts.
-* **READINGS** is the five-second audit trail. Note the pairs of columns:
-  `Comp` beside `Amps`, `Fan` beside `RPM` — the command next to the measurement
-  that verifies it. Out-of-band temperatures and unbadged openings are
-  highlighted.
-* **ALERT EVENTS** is the transition log — one row per condition start and end,
-  matching what you saw live.
-* **Export CSV** writes the readings to a file you can open in Excel.
+Open **Incidents**. Every condition raised above is there with its severity,
+device, duration and assessed cause. **Acknowledge** one: its status changes and
+your name is recorded against it. Filter by severity, device, status or time
+range, and export the result to CSV.
 
----
+### Step 9 — Maintenance mode
+
+Press **Enter maintenance** in the top bar and confirm. Conditions are still
+evaluated and logged, the actuators are parked off, but the unit no longer
+escalates and the siren stays silent. The banner says so explicitly, and the
+mode row names who activated it. Leave maintenance to restore escalation.
+
+### Step 10 — Reset
+
+Back on **Simulations**, press **Reset all simulations**. Every armed fault
+clears on every device, the conditions resolve with their own events, and the
+dashboard returns to green.
+
+### Step 11 — The stored record
+
+Open **History**. The tiles summarise the range; the charts show humidity,
+compressor current, fan speed and an activity ribbon for door/compressor/fan.
+The readings table is the five-second audit trail — note the pairs of columns,
+`Comp` beside `Amps` and `Fan` beside `RPM`, the command next to the measurement
+that verifies it. The events table marks which rows came from a simulation.
 
 ## 6. Speeding up the demo
 
@@ -391,8 +352,8 @@ ACTUATOR_FAULT_SECONDS = 6       # default 15
 
 Restart the data manager afterwards — it reads these once at startup.
 
-The **room temperature** slider on the ambient sensor is the other accelerator:
-raising it makes the cabinet warm up much faster, with or without the door open.
+Arming **Ambient Room Sensor → Building cooling failure** is the other
+accelerator: a hot storeroom makes the cabinet warm up far faster.
 
 ---
 
@@ -446,6 +407,13 @@ BROKER_INDEX = 0
 
 That one runs on port 80, which is rarely filtered, but requires the college
 network.
+
+### A cleared fault takes a minute to stop showing as critical
+
+This is deliberate. A compressor fault can only be *disproven* by commanding the
+compressor on and watching it draw current, so after you clear the simulation
+the incident stays open until the next cooling cycle proves the hardware works.
+The same applies to the fan. Everything else clears within a second or two.
 
 ### Values jump around, or the log shows duplicated events
 

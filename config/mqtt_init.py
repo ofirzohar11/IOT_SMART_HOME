@@ -1,7 +1,8 @@
-"""Central configuration for the Cold Chain Monitor system.
+"""Central configuration for the Cold Chain Monitor.
 
 Every process (emulators, data manager, GUI) imports this module, so the broker,
-the topic tree and the alarm thresholds are defined exactly once.
+the topic tree, the alarm thresholds and the severity vocabulary are defined
+exactly once.
 """
 
 import socket
@@ -23,7 +24,9 @@ BROKER_PORT = _BROKER_PORTS[BROKER_INDEX]
 USERNAME = _USERNAMES[BROKER_INDEX]
 PASSWORD = _PASSWORDS[BROKER_INDEX]
 
-KEEPALIVE = 60
+KEEPALIVE = 30          # seconds; a dead link is noticed within ~1.5x this
+RECONNECT_MIN_S = 1
+RECONNECT_MAX_S = 20
 
 
 def resolve_broker_ip():
@@ -41,15 +44,17 @@ def resolve_broker_ip():
 # namespaced to this project to avoid picking up somebody else's traffic.
 TOPIC_ROOT = 'HIT/coldchain/ofir/unit1'
 
+# Sensors -> manager
 TOPIC_TEMP = TOPIC_ROOT + '/sensor/temp'          # primary probe
 TOPIC_TEMP_B = TOPIC_ROOT + '/sensor/temp_b'      # redundant probe
-TOPIC_AMBIENT = TOPIC_ROOT + '/sensor/ambient'    # room temperature outside the unit
+TOPIC_AMBIENT = TOPIC_ROOT + '/sensor/ambient'    # room temperature
 TOPIC_DOOR = TOPIC_ROOT + '/sensor/door'
 TOPIC_POWER = TOPIC_ROOT + '/sensor/power'
 TOPIC_BADGE = TOPIC_ROOT + '/sensor/badge'        # RFID reader at the door
 TOPIC_CURRENT = TOPIC_ROOT + '/sensor/current'    # compressor current draw
 TOPIC_FAN_RPM = TOPIC_ROOT + '/sensor/fan_rpm'    # fan tachometer
 
+# Manager <-> actuators
 TOPIC_COMPRESSOR_CMD = TOPIC_ROOT + '/actuator/compressor/cmd'
 TOPIC_COMPRESSOR_STS = TOPIC_ROOT + '/actuator/compressor/sts'
 TOPIC_FAN_CMD = TOPIC_ROOT + '/actuator/fan/cmd'
@@ -57,9 +62,47 @@ TOPIC_FAN_STS = TOPIC_ROOT + '/actuator/fan/sts'
 TOPIC_SIREN_CMD = TOPIC_ROOT + '/actuator/siren/cmd'
 TOPIC_SIREN_STS = TOPIC_ROOT + '/actuator/siren/sts'
 
+# Manager -> GUI
 TOPIC_ALERT = TOPIC_ROOT + '/alert'
 TOPIC_STATUS = TOPIC_ROOT + '/status'
+TOPIC_INCIDENTS = TOPIC_ROOT + '/incidents'
+
+# GUI -> manager
 TOPIC_MODE_CMD = TOPIC_ROOT + '/mode/cmd'
+TOPIC_INCIDENT_CMD = TOPIC_ROOT + '/incident/cmd'   # acknowledge / resolve
+
+# GUI -> emulators: fault injection. Every device subscribes and applies the
+# faults it owns; each reports back what it currently has active.
+TOPIC_SIM_CMD = TOPIC_ROOT + '/sim/cmd'
+TOPIC_SIM_STS = TOPIC_ROOT + '/sim/sts'          # each device posts to sts/<id>
+TOPIC_SIM_STS_WILDCARD = TOPIC_SIM_STS + '/+'
+
+
+def sim_status_topic(device_id):
+    return '%s/%s' % (TOPIC_SIM_STS, device_id)
+
+# --------------------------------------------------------------------------
+# Severity vocabulary
+# --------------------------------------------------------------------------
+LEVEL_INFO = 'INFO'
+LEVEL_WARNING = 'WARNING'
+LEVEL_CRITICAL = 'CRITICAL'
+LEVELS = (LEVEL_INFO, LEVEL_WARNING, LEVEL_CRITICAL)
+LEVEL_ORDER = {LEVEL_INFO: 0, LEVEL_WARNING: 1, LEVEL_CRITICAL: 2}
+
+# Databases written before the rename store 'ALARM'; treat it as CRITICAL when
+# reading history back so old rows still sort and colour correctly.
+LEGACY_LEVELS = {'ALARM': LEVEL_CRITICAL}
+
+
+def normalise_level(level):
+    return LEGACY_LEVELS.get(level, level)
+
+
+def worst(*levels):
+    """Return the most severe level out of the ones given."""
+    return max(levels, key=lambda lv: LEVEL_ORDER.get(normalise_level(lv), 0))
+
 
 # --------------------------------------------------------------------------
 # Storage thresholds
@@ -71,6 +114,8 @@ TEMP_TARGET_MIN = 2.0
 TEMP_TARGET_MAX = 8.0
 TEMP_ALARM_MIN = 0.0
 TEMP_ALARM_MAX = 10.0
+# Approaching the edge of the band is worth surfacing before it is breached.
+TEMP_APPROACH_MARGIN = 0.8
 
 HUM_TARGET_MIN = 30.0
 HUM_TARGET_MAX = 70.0
@@ -82,6 +127,14 @@ TEMP_GAUGE_MAX = 15.0
 HUM_GAUGE_MIN = 0.0
 HUM_GAUGE_MAX = 100.0
 
+# Plausibility limits: anything outside these is a malformed reading, not a
+# real measurement, and is rejected rather than alarmed on.
+VALID_TEMP_RANGE = (-60.0, 90.0)
+VALID_HUM_RANGE = (0.0, 100.0)
+VALID_CURRENT_RANGE = (0.0, 60.0)
+VALID_RPM_RANGE = (0.0, 10000.0)
+VALID_BATTERY_RANGE = (0.0, 100.0)
+
 # --------------------------------------------------------------------------
 # Compressor control (hysteresis keeps the relay from chattering around 8 C)
 # --------------------------------------------------------------------------
@@ -89,8 +142,7 @@ COMPRESSOR_ON_ABOVE = 6.5
 COMPRESSOR_OFF_BELOW = 3.5
 
 # --------------------------------------------------------------------------
-# Time based rules - these are what separate a cold chain monitor from a
-# plain thermometer. A short excursion is tolerable, a sustained one is not.
+# Time based rules
 # --------------------------------------------------------------------------
 DOOR_WARNING_SECONDS = 20
 DOOR_ALARM_SECONDS = 45
@@ -102,9 +154,6 @@ SENSOR_TIMEOUT_SECONDS = 25
 # --------------------------------------------------------------------------
 # Redundant temperature probe
 # --------------------------------------------------------------------------
-# Two probes in the same cabinet should read almost the same. A sustained
-# disagreement means one of them is lying, and there is no way to tell which -
-# which is exactly why regulators require a second probe.
 PROBE_DISAGREE_C = 2.0
 PROBE_DISAGREE_SECONDS = 30
 PROBE_B_TIMEOUT_SECONDS = 30
@@ -112,21 +161,18 @@ PROBE_B_TIMEOUT_SECONDS = 30
 # --------------------------------------------------------------------------
 # Actuator feedback - measuring what the hardware actually did
 # --------------------------------------------------------------------------
-# A relay reports the command it received, not whether the motor turned. The
-# current clamp and the tachometer are what catch a welded relay or a seized
-# compressor.
 ACTUATOR_FAULT_SECONDS = 15   # grace period after a command before judging it
 
-CURRENT_NOMINAL_A = 4.2       # a healthy compressor under load
-CURRENT_RUNNING_MIN_A = 0.5   # below this the motor is not turning
-CURRENT_OVERLOAD_A = 8.0      # above this it is straining or shorting
+CURRENT_NOMINAL_A = 4.2
+CURRENT_RUNNING_MIN_A = 0.5
+CURRENT_OVERLOAD_A = 8.0
 
 FAN_RPM_NOMINAL = 1450
-FAN_RPM_MIN = 300             # below this the fan is stalled
-FAN_RPM_DEGRADED = 900        # turning, but not fast enough - worn bearing
+FAN_RPM_MIN = 300
+FAN_RPM_DEGRADED = 900
 
 # --------------------------------------------------------------------------
-# Ambient (room) temperature - used to tell a facility problem from a unit one
+# Ambient (room) temperature
 # --------------------------------------------------------------------------
 AMBIENT_NOMINAL_C = 22.0
 AMBIENT_WARNING_C = 30.0
@@ -135,10 +181,20 @@ AMBIENT_TIMEOUT_SECONDS = 30
 # --------------------------------------------------------------------------
 # Access control
 # --------------------------------------------------------------------------
-# A door opening is attributed to the last badge scanned within this window.
-# Opening it without a badge is an unauthorised access for the audit trail.
 BADGE_VALID_SECONDS = 60
 UNKNOWN_OPERATOR = 'UNKNOWN'
+DEFAULT_OPERATOR = 'Console operator'
+
+# --------------------------------------------------------------------------
+# Connectivity
+# --------------------------------------------------------------------------
+# How long the manager may be disconnected from the broker before it is treated
+# as a communications failure rather than a blip.
+MQTT_DOWN_SECONDS = 12
+
+# A simulated link outage heals itself, both because real ones do and because a
+# device with its connection cut can no longer hear the command to restore it.
+SIM_OUTAGE_SECONDS = 30
 
 # --------------------------------------------------------------------------
 # Timing
@@ -146,16 +202,4 @@ UNKNOWN_OPERATOR = 'UNKNOWN'
 SENSOR_PUBLISH_MS = 3000     # temperature sensor sample rate
 EVALUATE_INTERVAL_S = 1.0    # data manager rule evaluation tick
 DB_WRITE_INTERVAL_S = 5.0    # how often a reading row is persisted
-
-# --------------------------------------------------------------------------
-# Alert levels, ordered by severity
-# --------------------------------------------------------------------------
-LEVEL_INFO = 'INFO'
-LEVEL_WARNING = 'WARNING'
-LEVEL_ALARM = 'ALARM'
-LEVEL_ORDER = {LEVEL_INFO: 0, LEVEL_WARNING: 1, LEVEL_ALARM: 2}
-
-
-def worst(*levels):
-    """Return the most severe level out of the ones given."""
-    return max(levels, key=lambda lv: LEVEL_ORDER.get(lv, 0))
+STATUS_PUBLISH_INTERVAL_S = 1.0

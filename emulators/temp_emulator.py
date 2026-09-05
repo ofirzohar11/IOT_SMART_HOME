@@ -1,4 +1,4 @@
-"""Temperature and humidity sensor emulator (the data producer).
+"""Temperature and humidity sensor emulator (the primary data producer).
 
 Instead of publishing random numbers, this emulator runs a small thermal model
 of the cabinet, so the readings react to what the rest of the system does:
@@ -7,10 +7,14 @@ of the cabinet, so the readings react to what the rest of the system does:
 * an open door lets warm room air in much faster than the closed cabinet leaks,
 * the room temperature reported by the ambient sensor sets what the cabinet is
   leaking towards, so a hot storeroom really does make cooling harder,
-* a cooling failure can be injected to produce a real temperature excursion.
+* an injected cooling failure leaves the compressor commanded on with no effect.
 
 That makes the whole system a closed control loop: sensor -> data manager ->
 compressor relay -> sensor.
+
+The model runs regardless of the display faults. A frozen or drifting probe
+changes what is *reported*, not what the cabinet is actually doing - which is
+precisely why those faults are dangerous and worth simulating.
 """
 
 import os
@@ -25,11 +29,11 @@ ensure_qt_plugin_path()
 import random
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QCheckBox, QGridLayout, QLabel, QVBoxLayout
+from PyQt5.QtWidgets import QGridLayout, QLabel
 
 from config import mqtt_init as cfg
 from config.mqtt_client import parse_json
-from emulators import ui_common as ui
+from ui import theme as ui
 from emulators.ui_common import EmulatorPanel, run_panel
 
 # --- thermal model constants ------------------------------------------------
@@ -43,33 +47,39 @@ HUM_DRIFT = 0.4
 HUM_DOOR_GAIN = 2.5
 
 START_TEMP = 5.0
+DRIFT_PER_TICK = 0.22
+SPIKE_C = 16.5
+DROP_C = -3.5
+HUM_SPIKE = 92.0
+HUM_DROP = 18.0
 
-GEOMETRY = (40, 60, 380, 400)
+GEOMETRY = (40, 60, 380, 360)
 
 
 class TempSensorPanel(EmulatorPanel):
 
     def __init__(self):
-        super().__init__(
-            role='temp',
-            title='🌡  Temperature Probe A',
-            subtitle='Primary probe - publishes a JSON sample every %.1f s'
-                     % (cfg.SENSOR_PUBLISH_MS / 1000.0),
-            topic_note='pub: %s\nsub: %s , %s , %s'
-                       % (cfg.TOPIC_TEMP, cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR,
-                          cfg.TOPIC_AMBIENT),
-        )
+        super().__init__('temp')
         self.setMinimumWidth(300)
 
+        # The physical cabinet
         self.temperature = START_TEMP
         self.humidity = HUM_BASE
         self.compressor_on = False
         self.door_open = False
         self.ambient = cfg.AMBIENT_NOMINAL_C
 
+        # What the probe reports, which a fault can separate from the truth
+        self.reported_temp = START_TEMP
+        self.reported_hum = HUM_BASE
+        self.drift = 0.0
+        self._frozen_temp = None
+        self._frozen_hum = None
+
         self._build_ui()
 
-        self.mqtt.subscribe(cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR, cfg.TOPIC_AMBIENT)
+        self.mqtt.subscribe(cfg.TOPIC_COMPRESSOR_STS, cfg.TOPIC_DOOR,
+                            cfg.TOPIC_AMBIENT)
         self.start_mqtt()
 
         self.timer = QTimer(self)
@@ -101,30 +111,12 @@ class TempSensorPanel(EmulatorPanel):
                                    color=ui.TEXT_DIM, align=Qt.AlignCenter)
         grid.addWidget(self.modelLabel, 2, 0, 1, 2)
 
-        controls = ui.make_subpanel()
-        box = QVBoxLayout(controls)
-        box.setContentsMargins(16, 14, 16, 14)
-        box.setSpacing(10)
-        # Room temperature comes from the ambient sensor, not from a control
-        # here, so the two emulators form a second closed loop.
-        self.ambientLabel = ui.label('room: %.0f °C (from ambient sensor)'
-                                     % cfg.AMBIENT_NOMINAL_C,
-                                     size=11, color=ui.TEXT_DIM)
-        box.addWidget(self.ambientLabel)
-
-        self.faultCheck = QCheckBox('Inject cooling failure')
-        self.onlineCheck = QCheckBox('Sensor online (publishing)')
-        self.onlineCheck.setChecked(True)
-        for check in (self.faultCheck, self.onlineCheck):
-            check.setStyleSheet(
-                'QCheckBox { color: %s; font-family: %s; font-size: 12px; '
-                'background: transparent; border: none; }'
-                'QCheckBox::indicator { width: 15px; height: 15px; }'
-                % (ui.TEXT, ui.FONT))
-            box.addWidget(check)
+        self.truthLabel = ui.label('', size=10, color=ui.WARN,
+                                   align=Qt.AlignCenter)
+        self.truthLabel.hide()
+        grid.addWidget(self.truthLabel, 3, 0, 1, 2)
 
         self.body.addWidget(readouts)
-        self.body.addWidget(controls)
 
     @staticmethod
     def _style_value(widget, color):
@@ -143,18 +135,39 @@ class TempSensorPanel(EmulatorPanel):
             data = parse_json(payload, {})
             try:
                 self.ambient = float(data['ambient'])
-                self.ambientLabel.setText('room: %.1f °C (from ambient sensor)'
-                                          % self.ambient)
             except (KeyError, TypeError, ValueError):
                 pass
 
+    # -- faults ------------------------------------------------------------
+    def on_fault_changed(self, fault_id, active):
+        if fault_id == 'temp_drift' and not active:
+            self.drift = 0.0
+        elif fault_id == 'temp_frozen':
+            self._frozen_temp = self.reported_temp if active else None
+        elif fault_id == 'hum_frozen':
+            self._frozen_hum = self.reported_hum if active else None
+
     # -- simulation --------------------------------------------------------
     def tick(self):
-        ambient = self.ambient
-        cooling_failed = self.faultCheck.isChecked()
+        self._advance_physics()
+        self._apply_reporting_faults()
+        self._update_readouts()
 
+        if not self.telemetry_allowed():
+            self.modelLabel.setText('not publishing - telemetry fault armed')
+            return
+
+        self.mqtt.publish_json(cfg.TOPIC_TEMP, {
+            'temperature': self.reported_temp,
+            'humidity': self.reported_hum,
+            'unit': 'C',
+        })
+
+    def _advance_physics(self):
+        """What the cabinet is really doing, independent of what is reported."""
+        cooling_failed = self.has_fault('cooling_fail')
         leak = LEAK_OPEN if self.door_open else LEAK_CLOSED
-        self.temperature += (ambient - self.temperature) * leak
+        self.temperature += (self.ambient - self.temperature) * leak
         if self.compressor_on and not cooling_failed:
             self.temperature -= COOLING_PER_TICK
         self.temperature += random.uniform(-NOISE, NOISE)
@@ -165,27 +178,36 @@ class TempSensorPanel(EmulatorPanel):
         self.humidity += random.uniform(-HUM_DRIFT, HUM_DRIFT)
         self.humidity = round(max(10.0, min(95.0, self.humidity)), 1)
 
-        self._update_readouts(cooling_failed)
+    def _apply_reporting_faults(self):
+        """Separate the reported value from the true one where a fault says so."""
+        if self.has_fault('temp_frozen') and self._frozen_temp is not None:
+            self.reported_temp = self._frozen_temp
+        elif self.has_fault('temp_spike'):
+            self.reported_temp = round(SPIKE_C + random.uniform(-0.2, 0.2), 2)
+        elif self.has_fault('temp_drop'):
+            self.reported_temp = round(DROP_C + random.uniform(-0.2, 0.2), 2)
+        else:
+            if self.has_fault('temp_drift'):
+                self.drift += DRIFT_PER_TICK
+            self.reported_temp = round(self.temperature + self.drift, 2)
 
-        if not self.onlineCheck.isChecked():
-            self.modelLabel.setText('sensor offline - not publishing')
-            return
+        if self.has_fault('hum_frozen') and self._frozen_hum is not None:
+            self.reported_hum = self._frozen_hum
+        elif self.has_fault('hum_spike'):
+            self.reported_hum = round(HUM_SPIKE + random.uniform(-1, 1), 1)
+        elif self.has_fault('hum_drop'):
+            self.reported_hum = round(HUM_DROP + random.uniform(-1, 1), 1)
+        else:
+            self.reported_hum = self.humidity
 
-        self.mqtt.publish_json(cfg.TOPIC_TEMP, {
-            'temperature': self.temperature,
-            'humidity': self.humidity,
-            'unit': 'C',
-        })
-        print('[temp] published %.2f C / %.1f %%' % (self.temperature, self.humidity))
+    def _update_readouts(self):
+        self.tempValue.setText('%.1f °C' % self.reported_temp)
+        self.humValue.setText('%.0f %%' % self.reported_hum)
 
-    def _update_readouts(self, cooling_failed):
-        self.tempValue.setText('%.1f °C' % self.temperature)
-        self.humValue.setText('%.0f %%' % self.humidity)
-
-        in_band = cfg.TEMP_TARGET_MIN <= self.temperature <= cfg.TEMP_TARGET_MAX
+        in_band = cfg.TEMP_TARGET_MIN <= self.reported_temp <= cfg.TEMP_TARGET_MAX
         self._style_value(self.tempValue, ui.OK if in_band else ui.ALARM)
 
-        if cooling_failed:
+        if self.has_fault('cooling_fail'):
             state = 'cooling failure injected - temperature rising'
         elif self.door_open:
             state = 'door open - warm air entering'
@@ -194,6 +216,15 @@ class TempSensorPanel(EmulatorPanel):
         else:
             state = 'compressor off - slow warm-up'
         self.modelLabel.setText(state)
+
+        # When the report and reality have been forced apart, say so on the
+        # panel; the point of these faults is that the dashboard cannot tell.
+        misreporting = abs(self.reported_temp - self.temperature) > 0.5
+        if misreporting:
+            self.truthLabel.setText('cabinet is actually %.1f °C' % self.temperature)
+            self.truthLabel.show()
+        else:
+            self.truthLabel.hide()
 
 
 if __name__ == '__main__':
