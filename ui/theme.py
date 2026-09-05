@@ -201,9 +201,26 @@ TOOLTIP_STYLE = '''
     QToolTip {
         background-color: %s; color: %s; border: 1px solid %s;
         border-radius: %dpx; padding: 9px 12px;
-        font-family: %s; font-size: 12px; opacity: 255;
+        font-family: %s; font-size: 12px;
     }
 ''' % (PANEL_ALT, TEXT, BORDER_STRONG, RADIUS, FONT)
+
+
+def apply_tooltip_style(app):
+    """Make every tooltip in this application an opaque, readable card.
+
+    A stylesheet alone is not enough: on macOS the native tooltip window is
+    translucent at the platform level, so without a matching opaque palette
+    the panel colour is drawn over whatever was on screen underneath it and
+    the text becomes unreadable. Setting both keeps the tooltip solid on
+    every platform.
+    """
+    from PyQt5.QtGui import QColor, QPalette
+    app.setStyleSheet(app.styleSheet() + TOOLTIP_STYLE)
+    palette = app.palette()
+    palette.setColor(QPalette.ToolTipBase, QColor(PANEL_ALT))
+    palette.setColor(QPalette.ToolTipText, QColor(TEXT))
+    app.setPalette(palette)
 
 
 SCROLLBAR = '''

@@ -448,7 +448,7 @@ def main():
     app.setApplicationName('Cold Chain Monitor')
     # Explanations are part of this interface, so they are styled like the rest
     # of it rather than left as the platform's yellow rectangle.
-    app.setStyleSheet(t.TOOLTIP_STYLE)
+    t.apply_tooltip_style(app)
 
     def handle_exception(kind, value, tb):
         """Never let one widget bug close the console silently."""

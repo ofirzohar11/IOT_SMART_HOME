@@ -28,8 +28,8 @@ from config import devices as registry
 from config import mqtt_init as cfg
 from config.mqtt_client import MqttClient, parse_json
 from ui import help as h
-from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM,
-                      TOOLTIP_STYLE, WARN, label)
+from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM, WARN,
+                      apply_tooltip_style, label)
 
 TELEMETRY_DELAY_FACTOR = 4     # publish one sample in four when delayed
 
@@ -320,7 +320,7 @@ class EmulatorWindow(QMainWindow):
 def run_panel(panel_factory, geometry):
     """Entry point used by every single-device emulator script."""
     app = QApplication(sys.argv)
-    app.setStyleSheet(TOOLTIP_STYLE)
+    apply_tooltip_style(app)
     panel = panel_factory()
     window = EmulatorWindow(panel, geometry)
     window.show()
