@@ -23,7 +23,7 @@ ensure_qt_plugin_path()
 import time
 import traceback
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout,
                              QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -39,6 +39,7 @@ from gui.pages.incidents import IncidentsPage
 from gui.pages.settings import SettingsPage
 from gui.pages.simulations import SimulationsPage
 from ui import help as h
+from ui import icons
 from ui import theme as t
 from ui import widgets as w
 
@@ -52,43 +53,59 @@ STATUS_STALE_SECONDS = 8
 ALERT_TOAST_INTERVAL_S = 3.5
 
 NAV_ITEMS = [
-    ('Dashboard', '◈', DashboardPage,
+    ('Dashboard', 'gauge', DashboardPage,
      'Is the fridge safe right now? Live temperature, equipment and anything '
      'that needs attention.'),
-    ('Devices', '◉', DevicesPage,
+    ('Devices', 'devices', DevicesPage,
      'Every sensor and switch in the unit: what it is for, and whether it is '
      'still reporting.'),
-    ('Incidents', '⚑', IncidentsPage,
+    ('Incidents', 'flag', IncidentsPage,
      'Problems the system has opened a case for, each with what to do about '
      'it.'),
-    ('Simulations', '⚗', SimulationsPage,
+    ('Simulations', 'flask', SimulationsPage,
      'Break something on purpose to prove the alarms really work. Everything '
      'it causes is labelled SIMULATED.'),
-    ('History', '▤', HistoryPage,
+    ('History', 'table', HistoryPage,
      'The stored record: every reading and every alert, ready to export.'),
-    ('Settings', '⚙', SettingsPage,
+    ('Settings', 'gear', SettingsPage,
      'The limits every alarm is measured against: what each one is, what it '
      'is recommended to be, and what happens when it is crossed.'),
 ]
 
 
 class NavButton(QPushButton):
+    """One destination in the rail: a drawn icon, then the word.
 
-    def __init__(self, text, glyph):
-        super().__init__('   %s    %s' % (glyph, text))
+    The icon is painted rather than typed. The characters previously used here
+    were absent from the UI font on every platform, so each one arrived from a
+    different fallback and the six of them were six different sizes.
+    """
+
+    def __init__(self, text, icon_name):
+        super().__init__('    ' + text)
+        self.icon_name = icon_name
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(40)
+        self.setFixedHeight(38)
+        self.setIconSize(QSize(17, 17))
         self.setStyleSheet('''
             QPushButton {
-                background-color: transparent; color: %s; border: none;
-                border-radius: %dpx; font-family: %s; font-size: 13px;
-                font-weight: 600; text-align: left; padding-left: 6px;
+                background-color: transparent; color: %s;
+                border: 1px solid transparent; border-radius: %dpx;
+                font-family: %s; font-size: %dpx; font-weight: 600;
+                text-align: left; padding-left: 10px;
             }
             QPushButton:hover { background-color: %s; color: %s; }
             QPushButton:checked { background-color: %s; color: %s; }
-        ''' % (t.TEXT_DIM, t.RADIUS, t.FONT, t.PANEL_HOVER, t.TEXT,
-               t.PANEL_ALT, t.ACCENT))
+            QPushButton:focus { border: 1px solid %s; }
+        ''' % (t.TEXT_DIM, t.RADIUS, t.FONT, t.SIZE_BASE, t.PANEL_HOVER,
+               t.TEXT, t.PANEL_ALT, t.ACCENT, t.ACCENT))
+        self._repaint_icon()
+        self.toggled.connect(lambda _c: self._repaint_icon())
+
+    def _repaint_icon(self):
+        self.setIcon(icons.icon(self.icon_name, 17,
+                                t.ACCENT if self.isChecked() else t.TEXT_DIM))
 
 
 class MainWindow(QWidget):
@@ -102,7 +119,13 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Cold Chain Monitor - Pharmaceutical Storage Unit 1')
-        self.setMinimumSize(1180, 760)
+        # 1280x780 is what the dashboard actually needs: the navigation rail,
+        # five system-health tiles, two gauges beside a status column and a row
+        # of five readings whose values are never allowed to lose a character.
+        # It was 1180x760, which is narrower than the layout has ever fitted
+        # into - the page answered by growing a horizontal scrollbar and
+        # clipping the right-hand column off the screen.
+        self.setMinimumSize(1280, 780)
         self.resize(1520, 940)
         self.setStyleSheet('background-color: %s;' % t.BG)
 
@@ -128,11 +151,12 @@ class MainWindow(QWidget):
 
         self.stack = QStackedWidget()
         self.pages = []
-        for index, (title, glyph, page_class, _tip) in enumerate(NAV_ITEMS):
+        for index, (title, _icon, page_class, _tip) in enumerate(NAV_ITEMS):
             page = page_class(self)
             self.pages.append(page)
             self.stack.addWidget(page)
         rightLayout.addWidget(self.stack, stretch=1)
+        rightLayout.addWidget(self._build_footer())
         root.addWidget(right, stretch=1)
 
         self.toasts = w.ToastHost(self)
@@ -174,32 +198,51 @@ class MainWindow(QWidget):
 
         brand = QVBoxLayout()
         brand.setSpacing(1)
-        brand.addWidget(t.label('❄  COLD CHAIN', size=15, bold=True, spacing=0.6))
-        brand.addWidget(t.label('Storage Unit 1', size=11, color=t.TEXT_MUTED))
+        markRow = QHBoxLayout()
+        markRow.setContentsMargins(0, 0, 0, 0)
+        markRow.setSpacing(9)
+        markRow.addWidget(icons.Icon('fridge', 18, t.ACCENT, width=1.6),
+                          alignment=Qt.AlignVCenter)
+        markRow.addWidget(t.label('COLD CHAIN', size=t.SIZE_MD, bold=True,
+                                  spacing=0.7))
+        markRow.addStretch()
+        brand.addLayout(markRow)
+        brand.addWidget(t.label('Pharmaceutical Storage Unit 1',
+                                size=t.SIZE_CAPTION, color=t.TEXT_MUTED))
         layout.addLayout(brand)
-        layout.addSpacing(18)
+        layout.addSpacing(t.SPACE_MD)
 
         self.navGroup = QButtonGroup(self)
         self.navGroup.setExclusive(True)
-        for index, (title, glyph, _cls, tip) in enumerate(NAV_ITEMS):
-            button = NavButton(title, glyph)
+        for index, (title, icon_name, _cls, tip) in enumerate(NAV_ITEMS):
+            button = NavButton(title, icon_name)
             h.set_help(button, title, tip)
             button.clicked.connect(lambda _c, i=index: self._select(i))
             self.navGroup.addButton(button, index)
             layout.addWidget(button)
 
         layout.addStretch()
-        self.navAlertLabel = t.label('', size=10, color=t.TEXT_MUTED)
-        self.navAlertLabel.setWordWrap(True)
-        h.set_help(self.navAlertLabel, 'Open conditions',
+
+        # A persistent count of what is open, wherever the operator is.
+        self.navAlertPill = w.Pill('No active alerts', t.OK, filled=False,
+                                   mark='mark_normal', size=t.SIZE_CAPTION)
+        h.set_help(self.navAlertPill, 'Open conditions',
                    'How many critical problems and warnings are active right '
                    'now, wherever you are in the console.',
                    'It follows you from page to page, so a problem raised '
                    'while you are reading the history is not missed.',
                    'No active alerts.')
-        layout.addWidget(self.navAlertLabel)
-        brokerLabel = t.label('broker\n%s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
-                              size=9, color=t.TEXT_MUTED)
+        layout.addWidget(self.navAlertPill)
+        layout.addSpacing(t.SPACE_SM)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet('background-color: %s; border: none;' % t.BORDER)
+        layout.addWidget(divider)
+        layout.addSpacing(t.SPACE_SM)
+
+        brokerLabel = t.label('Broker\n%s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
+                              size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
         h.set_help(brokerLabel, 'Message broker',
                    'The server every device and this console connect to in '
                    'order to exchange messages.',
@@ -207,6 +250,23 @@ class MainWindow(QWidget):
                    'connection indicator turns red, this is what it lost.')
         layout.addWidget(brokerLabel)
         return rail
+
+    def _build_footer(self):
+        """A quiet strip identifying the unit and the author of the console."""
+        bar = QFrame()
+        bar.setFixedHeight(26)
+        bar.setStyleSheet('QFrame { background: transparent; border: none; '
+                          'border-top: 1px solid %s; }' % t.BORDER)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(2, 5, 2, 0)
+        row.setSpacing(t.SPACE_SM)
+        row.addWidget(t.label('Cold Chain Monitor  ·  Pharmaceutical Storage '
+                              'Unit 1', size=t.SIZE_CAPTION, color=t.TEXT_MUTED))
+        row.addStretch()
+        credit = t.label('Created by Ofir Zohar', size=t.SIZE_CAPTION,
+                         color=t.TEXT_MUTED)
+        row.addWidget(credit)
+        return bar
 
     def _build_topbar(self):
         bar = QFrame()
@@ -264,8 +324,8 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------
     # Console API used by the pages
     # ------------------------------------------------------------------
-    def toast(self, text, color=t.ACCENT, glyph='✓'):
-        self.toasts.show_toast(text, color, glyph)
+    def toast(self, text, color=t.ACCENT, mark='check'):
+        self.toasts.show_toast(text, color, mark)
 
     def set_fault(self, device_id, fault_id, active):
         self.mqtt.publish_json(cfg.TOPIC_SIM_CMD, {
@@ -372,7 +432,7 @@ class MainWindow(QWidget):
         faults = data.get('simulated_faults') or {}
         armed = sum(len(v) for v in faults.values())
         if armed:
-            self.simPill.set('%d simulated faults' % armed, t.SIM, '⚠')
+            self.simPill.set('%d simulated faults' % armed, t.SIM, 'mark_simulated')
             self.simPill.show()
         else:
             self.simPill.hide()
@@ -380,11 +440,17 @@ class MainWindow(QWidget):
         counts = data.get('alert_counts') or {}
         criticals = counts.get(cfg.LEVEL_CRITICAL, 0)
         warnings = counts.get(cfg.LEVEL_WARNING, 0)
-        if criticals or warnings:
-            self.navAlertLabel.setText('%d critical · %d warnings active'
-                                       % (criticals, warnings))
+        if criticals:
+            self.navAlertPill.set('%d critical · %d warning%s'
+                                  % (criticals, warnings,
+                                     '' if warnings == 1 else 's'),
+                                  t.CRITICAL, 'mark_critical')
+        elif warnings:
+            self.navAlertPill.set('%d warning%s'
+                                  % (warnings, '' if warnings == 1 else 's'),
+                                  t.WARN, 'mark_warning')
         else:
-            self.navAlertLabel.setText('No active alerts')
+            self.navAlertPill.set('No active alerts', t.OK, 'mark_normal')
 
         for page in self.pages:
             self._push_status(page, data)
@@ -419,9 +485,9 @@ class MainWindow(QWidget):
         self._suppressed_alerts = 0
         self._last_alert_toast = now
         if level == cfg.LEVEL_CRITICAL:
-            self.toast(message, t.CRITICAL, '■')
+            self.toast(message, t.CRITICAL, 'mark_critical')
         else:
-            self.toast(message, t.WARN, '▲')
+            self.toast(message, t.WARN, 'mark_warning')
 
     def _apply_device_status(self, device_id, state):
         for page in self.pages:
@@ -433,9 +499,9 @@ class MainWindow(QWidget):
     def _apply_connection(self, connected):
         self.linkPill.set('CONNECTED' if connected else 'DISCONNECTED',
                           t.OK if connected else t.CRITICAL,
-                          '●' if connected else '■')
+                          'mark_normal' if connected else 'mark_critical')
         if not connected:
-            self.toast('Lost connection to the broker', t.CRITICAL, '■')
+            self.toast('Lost connection to the broker', t.CRITICAL, 'mark_critical')
             return
         if not self._settings_announced:
             # The saved thresholds live in a file only this process reads, so
@@ -448,7 +514,7 @@ class MainWindow(QWidget):
     def _tick(self):
         # The console must not present a stale snapshot as if it were current.
         if self._last_status and time.time() - self._last_status > STATUS_STALE_SECONDS:
-            self.linkPill.set('NO DATA', t.WARN, '▲')
+            self.linkPill.set('NO DATA', t.WARN, 'mark_warning')
         for page in self.pages:
             try:
                 page.tick()

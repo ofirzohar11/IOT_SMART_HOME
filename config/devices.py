@@ -9,6 +9,13 @@ One declarative description of every physical device in the unit, shared by:
   this list rather than hard-coding either.
 
 Adding a device means adding one entry here.
+
+``icon`` names a line-art drawing in ``ui.icons`` rather than holding a
+character. These used to be emoji, which the operating system renders in its
+own colour font: a monitoring console for pharmaceutical storage picked up a
+brown door and a flashing red beacon, at whatever weight the platform chose,
+in colours that collided with a palette where green, amber and red mean
+something.
 """
 
 from config import mqtt_init as cfg
@@ -49,7 +56,7 @@ class Device(object):
         self.label = label
         self.kind = kind
         self.group = group
-        self.icon = icon
+        self.icon = icon                # a name in ui.icons, not a character
         self.period_s = period_s        # expected seconds between messages
         self.telemetry_topic = telemetry_topic
         self.cmd_topic = cmd_topic
@@ -88,7 +95,7 @@ BASE_FAULTS = (
 # --------------------------------------------------------------------------
 DEVICES = [
     Device(
-        'temp', 'Temperature Probe A', SENSOR, 'Cabinet', '🌡',
+        'temp', 'Temperature Probe A', SENSOR, 'Cabinet', 'thermometer',
         period_s=cfg.SENSOR_PUBLISH_MS / 1000.0,
         telemetry_topic=cfg.TOPIC_TEMP, unit='°C',
         describes='Primary probe and humidity, driven by a thermal model.',
@@ -111,7 +118,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'temp_b', 'Temperature Probe B', SENSOR, 'Cabinet', '🌡',
+        'temp_b', 'Temperature Probe B', SENSOR, 'Cabinet', 'thermometer',
         period_s=cfg.SENSOR_PUBLISH_MS / 1000.0,
         telemetry_topic=cfg.TOPIC_TEMP_B, unit='°C',
         describes='Redundant probe that cross-checks probe A.',
@@ -123,7 +130,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'ambient', 'Ambient Room Sensor', SENSOR, 'Facility', '🏠',
+        'ambient', 'Ambient Room Sensor', SENSOR, 'Facility', 'room',
         period_s=3.0, telemetry_topic=cfg.TOPIC_AMBIENT, unit='°C',
         describes='Storeroom temperature outside the cabinet.',
         faults=(
@@ -132,7 +139,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'door', 'Door Sensor', SENSOR, 'Cabinet', '🚪',
+        'door', 'Door Sensor', SENSOR, 'Cabinet', 'door',
         period_s=0.0, telemetry_topic=cfg.TOPIC_DOOR,
         describes='Reed switch reporting a retained OPEN / CLOSED state.',
         faults=(
@@ -145,7 +152,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'badge', 'RFID Badge Reader', SENSOR, 'Cabinet', '🪪',
+        'badge', 'RFID Badge Reader', SENSOR, 'Cabinet', 'badge',
         period_s=0.0, telemetry_topic=cfg.TOPIC_BADGE,
         describes='Names the operator responsible for a door opening.',
         faults=(
@@ -158,7 +165,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'power', 'Power Supply Sensor', SENSOR, 'Facility', '🔌',
+        'power', 'Power Supply Sensor', SENSOR, 'Facility', 'battery',
         period_s=3.0, telemetry_topic=cfg.TOPIC_POWER, unit='%',
         describes='Mains vs. backup battery and the charge remaining.',
         faults=(
@@ -171,7 +178,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'current', 'Compressor Current Sensor', SENSOR, 'Plant', '⚡',
+        'current', 'Compressor Current Sensor', SENSOR, 'Plant', 'bolt',
         period_s=2.0, telemetry_topic=cfg.TOPIC_CURRENT, unit='A',
         describes='Clamp meter measuring what the motor really draws.',
         faults=(
@@ -186,7 +193,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'fan_rpm', 'Fan Tachometer', SENSOR, 'Plant', '🌀',
+        'fan_rpm', 'Fan Tachometer', SENSOR, 'Plant', 'fan',
         period_s=2.0, telemetry_topic=cfg.TOPIC_FAN_RPM, unit='rpm',
         describes='Hall sensor measuring whether the fan really turns.',
         faults=(
@@ -201,7 +208,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'compressor', 'Compressor Relay', ACTUATOR, 'Plant', '❄',
+        'compressor', 'Compressor Relay', ACTUATOR, 'Plant', 'power_switch',
         period_s=0.0, cmd_topic=cfg.TOPIC_COMPRESSOR_CMD,
         sts_topic=cfg.TOPIC_COMPRESSOR_STS,
         describes='Switches the cooling element.',
@@ -215,7 +222,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'fan', 'Fan Relay', ACTUATOR, 'Plant', '🌀',
+        'fan', 'Fan Relay', ACTUATOR, 'Plant', 'fan',
         period_s=0.0, cmd_topic=cfg.TOPIC_FAN_CMD, sts_topic=cfg.TOPIC_FAN_STS,
         describes='Switches the circulation fan.',
         faults=(
@@ -228,7 +235,7 @@ DEVICES = [
         ),
     ),
     Device(
-        'siren', 'Siren Relay', ACTUATOR, 'Plant', '🚨',
+        'siren', 'Siren Relay', ACTUATOR, 'Plant', 'siren',
         period_s=0.0, cmd_topic=cfg.TOPIC_SIREN_CMD, sts_topic=cfg.TOPIC_SIREN_STS,
         describes='Audible alarm for any active critical condition.',
         faults=(

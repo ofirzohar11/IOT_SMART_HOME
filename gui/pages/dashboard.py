@@ -13,14 +13,17 @@ person who walks past this screen is usually not the person who built it.
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
-                             QVBoxLayout, QWidget)
+                             QSizePolicy, QVBoxLayout, QWidget)
 
+from config import devices as registry
 from config import mqtt_init as cfg
 from database import db
 from gui import charts, glossary
 from gui.components import ActuatorCard, EventFeed, IncidentCard, MetricTile
 from gui.pages.base import Page, page_layout, scrollable
 from ui import help as h
+from ui import icons
+from ui import status as stat
 from ui import theme as t
 from ui import widgets as w
 
@@ -86,12 +89,24 @@ class HeroBanner(QFrame):
         row.setContentsMargins(20, 14, 20, 14)
         row.setSpacing(18)
 
+        # The verdict block: a drawn mark, then the word, then the colour.
+        self.statusBlock = QFrame()
+        self.statusBlock.setObjectName('verdict')
+        self.statusBlock.setFixedWidth(186)
+        self.statusBlock.setMinimumHeight(76)
+        self.statusBlock.setToolTip(STATUS_HELP)
+        verdict = QHBoxLayout(self.statusBlock)
+        verdict.setContentsMargins(12, 10, 12, 10)
+        verdict.setSpacing(10)
+        verdict.addStretch()
+        self.statusMark = icons.Icon('mark_offline', 22, '#08111F', width=2.0)
         self.statusLabel = QLabel('WAITING')
         self.statusLabel.setAlignment(Qt.AlignCenter)
-        self.statusLabel.setFixedWidth(178)
-        self.statusLabel.setToolTip(STATUS_HELP)
-        self._paint_status(t.OFF, 'WAITING', '○')
-        row.addWidget(self.statusLabel)
+        verdict.addWidget(self.statusMark, alignment=Qt.AlignVCenter)
+        verdict.addWidget(self.statusLabel, alignment=Qt.AlignVCenter)
+        verdict.addStretch()
+        self._paint_status(t.OFF, 'WAITING', 'mark_offline')
+        row.addWidget(self.statusBlock)
 
         text = QVBoxLayout()
         text.setSpacing(3)
@@ -103,16 +118,25 @@ class HeroBanner(QFrame):
         text.addWidget(self.headlineLabel)
         text.addWidget(self.detailLabel)
 
-        self.actionLabel = t.label('', size=12, color=t.TEXT)
+        self.actionRow = QWidget()
+        self.actionRow.setStyleSheet('background: transparent;')
+        actionLayout = QHBoxLayout(self.actionRow)
+        actionLayout.setContentsMargins(0, 2, 0, 0)
+        actionLayout.setSpacing(8)
+        actionLayout.addWidget(icons.Icon('arrow_right', 13, t.TEXT_DIM,
+                                          width=1.6),
+                               alignment=Qt.AlignTop)
+        self.actionLabel = t.label('', size=t.SIZE_SM, color=t.TEXT)
         self.actionLabel.setWordWrap(True)
-        h.set_help(self.actionLabel, 'What to do',
+        actionLayout.addWidget(self.actionLabel, stretch=1)
+        h.set_help(self.actionRow, 'What to do',
                    'The recommended response to the most serious problem that '
                    'is currently open.',
                    'It turns a colour into an instruction, so the screen is '
                    'useful to somebody who has never been trained on it.',
                    note='Guidance only - follow your site procedure where it '
                         'differs.')
-        text.addWidget(self.actionLabel)
+        text.addWidget(self.actionRow)
         row.addLayout(text, stretch=1)
 
         counts = QVBoxLayout()
@@ -147,12 +171,17 @@ class HeroBanner(QFrame):
             'border-left: 4px solid %s; border-radius: %dpx; }'
             % (t.PANEL, t.BORDER, color, t.RADIUS_LG))
 
-    def _paint_status(self, color, text, glyph):
-        self.statusLabel.setText('%s  %s' % (glyph, text))
+    def _paint_status(self, color, text, mark):
+        self.statusMark.set_name(mark)
+        self.statusMark.set_color('#08111F')
+        self.statusLabel.setText(text)
         self.statusLabel.setStyleSheet(
-            'color: #08111F; background-color: %s; border: none; '
-            'border-radius: %dpx; font-family: %s; font-size: 16px; '
-            'font-weight: 700; padding: 15px 8px;' % (color, t.RADIUS, t.FONT))
+            'color: #08111F; background: transparent; border: none; '
+            'font-family: %s; font-size: %dpx; font-weight: 700; '
+            'letter-spacing: 0.4px;' % (t.FONT, t.SIZE_MD + 1))
+        self.statusBlock.setStyleSheet(
+            'QFrame#verdict { background-color: %s; border: none; '
+            'border-radius: %dpx; }' % (color, t.RADIUS))
 
     def set_action(self, text, open_count=0):
         """Called by the page with the advice from the worst open incident."""
@@ -175,33 +204,33 @@ class HeroBanner(QFrame):
             action = self._action or DEFAULT_ACTIONS.get(level, '')
 
         if not data.get('broker_connected', True):
-            color, text, glyph = t.CRITICAL, 'NO SIGNAL', '■'
+            color, text, mark = t.CRITICAL, 'NO SIGNAL', 'mark_critical'
             headline = 'This console has lost contact with the unit'
             action = ('Check the network connection. The fridge keeps cooling, '
                       'but nobody is watching it - verify the temperature at '
                       'the unit itself.')
         elif mode == 'MAINTENANCE':
-            color, text, glyph = t.ACCENT, 'SERVICING', '⚙'
+            color, text, mark = t.ACCENT, 'SERVICING', 'mark_maintenance'
             headline = 'Maintenance mode - alarms are not being raised'
             action = ('Conditions are still measured and recorded. Leave '
                       'maintenance mode as soon as servicing is finished.')
         elif sensor_state == 'OFFLINE':
-            color, text, glyph = t.CRITICAL, 'NO READING', '■'
+            color, text, mark = t.CRITICAL, 'NO READING', 'mark_critical'
             headline = 'The main thermometer has stopped reporting'
             action = glossary.alert('SENSOR_OFFLINE').action
         elif sensor_state == 'WAITING':
-            color, text, glyph = t.OFF, 'WAITING', '○'
+            color, text, mark = t.OFF, 'WAITING', 'mark_offline'
             headline = 'Waiting for the first reading from the unit'
             action = 'Nothing to do yet - readings usually arrive within a few '\
                      'seconds of the unit starting.'
         else:
             color = t.level_color(level)
             text = STATUS_WORDS.get(level, level)
-            glyph = t.level_glyph(level)
+            mark = t.level_mark(level)
             headline = HEADLINES.get(level, '')
 
         self._paint(color)
-        self._paint_status(color, text, glyph)
+        self._paint_status(color, text, mark)
         self.headlineLabel.setText(headline)
 
         detail = data.get('diagnosis') or ''
@@ -217,7 +246,8 @@ class HeroBanner(QFrame):
                        else 'Simulated faults are armed')
         self.detailLabel.setText(detail)
 
-        self.actionLabel.setText(('→  %s' % action) if action else '')
+        self.actionLabel.setText(action or '')
+        self.actionRow.setVisible(bool(action))
         self.actionLabel.setStyleSheet(
             'color: %s; font-family: %s; font-size: 12px; background: transparent; '
             'border: none;' % (t.TEXT if level != cfg.LEVEL_INFO else t.TEXT_DIM,
@@ -226,10 +256,14 @@ class HeroBanner(QFrame):
         counts = data.get('alert_counts') or {}
         criticals = counts.get(cfg.LEVEL_CRITICAL, 0)
         warnings = counts.get(cfg.LEVEL_WARNING, 0)
-        self.criticalPill.set('%d critical' % criticals,
-                              t.CRITICAL if criticals else t.TEXT_MUTED, '■')
-        self.warningPill.set('%d warnings' % warnings,
-                             t.WARN if warnings else t.TEXT_MUTED, '▲')
+        self.criticalPill.set(
+            '%d critical' % criticals,
+            t.CRITICAL if criticals else t.TEXT_MUTED,
+            'mark_critical' if criticals else 'mark_normal')
+        self.warningPill.set(
+            '%d warning%s' % (warnings, '' if warnings == 1 else 's'),
+            t.WARN if warnings else t.TEXT_MUTED,
+            'mark_warning' if warnings else 'mark_normal')
         self.updatedLabel.setText('updated %s   ·   up %s'
                                   % ((data.get('ts') or '')[-8:],
                                      _uptime(data.get('uptime_s'))))
@@ -240,6 +274,187 @@ def _uptime(seconds):
         return '--'
     hours, remainder = divmod(int(seconds), 3600)
     return '%dh %02dm' % (hours, remainder // 60) if hours else '%dm' % (remainder // 60)
+
+
+class SystemHealthStrip(QFrame):
+    """The five counts a first-time reader needs before anything else.
+
+    Somebody opening this console for the first time does not know what a
+    tachometer is or which of eleven cards matters. What they can read is a
+    row of counts: is the storage in range, how many devices need looking at,
+    how many have stopped reporting altogether, how many problems are open and
+    whether any of this is a drill. Each one is a number, a word and a mark -
+    never a colour on its own - and each says "none" rather than going blank
+    when there is nothing to report.
+    """
+
+    HELP = h.Explain(
+        'System health',
+        'A count of everything that could need somebody: devices that are '
+        'misbehaving, devices that have gone silent, and problems the system '
+        'has opened a case for.',
+        'The cards below answer "what is the temperature". This row answers '
+        '"is anything wrong, and how much of it" - which is the question '
+        'somebody walking up to the screen actually has.',
+        'Storage in range, every device reporting, nothing open, no drill '
+        'running.')
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('panel')
+        self.setStyleSheet(t.panel_style())
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(t.SPACE_MD, 11, t.SPACE_MD, 12)
+        root.setSpacing(t.SPACE_SM)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(t.caption('System health'))
+        head.addWidget(self.HELP.dot(size=12))
+        head.addStretch()
+        self.summaryLabel = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED)
+        head.addWidget(self.summaryLabel)
+        root.addLayout(head)
+
+        row = QHBoxLayout()
+        row.setSpacing(t.SPACE_SM)
+        self.items = {}
+        for key, caption_text, tip in (
+                ('storage', 'Storage conditions',
+                 h.Explain('Storage conditions',
+                           'Whether the temperature and humidity inside the '
+                           'cabinet are within the limits set on the Settings '
+                           'page.',
+                           'It is the thing the whole unit exists to protect.',
+                           'Normal.')),
+                ('attention', 'Devices needing attention',
+                 h.Explain('Devices needing attention',
+                           'Devices that are still reporting but are either '
+                           'outside their expected range or contradicting what '
+                           'the equipment was told to do.',
+                           'These are the ones a person can still fix before '
+                           'the stock is affected.',
+                           'None.')),
+                ('offline', 'Devices offline',
+                 h.Explain('Devices offline',
+                           'Devices that have stopped reporting altogether.',
+                           'A silent device is not a healthy one - whatever it '
+                           'was checking is no longer being checked, and the '
+                           'screen cannot tell you what it would have said.',
+                           'None.')),
+                ('incidents', 'Open incidents',
+                 h.Explain('Open incidents',
+                           'Problems the system has opened a case for and '
+                           'nobody has closed yet.',
+                           'The size of the queue waiting for a person. Each '
+                           'one carries the recommended action on the '
+                           'Incidents page.',
+                           'None.')),
+                ('drill', 'Simulation',
+                 h.Explain('Simulation',
+                           'Whether any fault has been armed on purpose from '
+                           'the Simulations page.',
+                           'Anything a drill causes is labelled SIMULATED so '
+                           'it is never mistaken for a real failure - but a '
+                           'drill left armed keeps raising alarms.',
+                           'Not running.'))):
+            item = _HealthItem(caption_text, tip)
+            self.items[key] = item
+            row.addWidget(item, stretch=1)
+        root.addLayout(row)
+
+    def update_state(self, data, open_incidents=0):
+        level = cfg.normalise_level(data.get('level', cfg.LEVEL_INFO))
+        sensor_state = data.get('sensor_state', 'ONLINE')
+
+        if sensor_state in ('OFFLINE', 'WAITING'):
+            self.items['storage'].set(
+                stat.OFFLINE,
+                'No reading' if sensor_state == 'OFFLINE' else 'Waiting')
+        else:
+            state = stat.from_level(level)
+            temperature = data.get('temperature')
+            self.items['storage'].set(
+                state, '--' if temperature is None
+                else '%.1f °C' % temperature)
+
+        health = data.get('device_health') or {}
+        attention = sum(1 for v in health.values()
+                        if v in ('DEGRADED', 'FAULT'))
+        offline = sum(1 for v in health.values() if v == 'OFFLINE')
+        total = len(health) or len(registry.DEVICES)
+
+        self.items['attention'].set(
+            stat.NORMAL if not attention else
+            (stat.CRITICAL if any(v == 'FAULT' for v in health.values())
+             else stat.WARNING),
+            'None' if not attention else '%d of %d' % (attention, total))
+        self.items['offline'].set(
+            stat.NORMAL if not offline else stat.OFFLINE,
+            'None' if not offline else '%d of %d' % (offline, total))
+        self.items['incidents'].set(
+            stat.NORMAL if not open_incidents else stat.WARNING,
+            'None' if not open_incidents else '%d open' % open_incidents)
+
+        faults = data.get('simulated_faults') or {}
+        armed = sum(len(v) for v in faults.values())
+        self.items['drill'].set(
+            stat.SIMULATED if armed else stat.NORMAL,
+            '%d armed' % armed if armed else 'Not running')
+
+        reporting = total - offline
+        self.summaryLabel.setText('%d of %d devices reporting'
+                                  % (reporting, total))
+
+
+class _HealthItem(QFrame):
+    """One count in the strip: a value, its state and what it is counting."""
+
+    def __init__(self, caption_text, help_entry):
+        super().__init__()
+        self.setObjectName('panel')
+        self.setStyleSheet(t.panel_style(background=t.PANEL_ALT,
+                                         radius=t.RADIUS))
+        self.setMinimumWidth(124)
+        help_entry.apply(self)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(5)
+
+        valueRow = QHBoxLayout()
+        valueRow.setContentsMargins(0, 0, 0, 0)
+        valueRow.setSpacing(7)
+        self.mark = icons.Icon('mark_normal', 13, t.OK, width=1.5)
+        self.valueLabel = t.label('--', size=t.SIZE_MD, bold=True)
+        valueRow.addWidget(self.mark, alignment=Qt.AlignVCenter)
+        valueRow.addWidget(self.valueLabel, stretch=1)
+        layout.addLayout(valueRow)
+
+        self.stateLabel = t.label('', size=t.SIZE_CAPTION, color=t.TEXT_MUTED,
+                                  bold=True, spacing=0.6)
+        layout.addWidget(self.stateLabel)
+        caption_label = t.label(caption_text, size=t.SIZE_XS,
+                                color=t.TEXT_MUTED)
+        caption_label.setWordWrap(True)
+        layout.addWidget(caption_label)
+
+    def set(self, state, value):
+        entry = stat.get(state)
+        self.mark.set_name(entry.mark)
+        self.mark.set_color(entry.color)
+        self.valueLabel.setText(str(value))
+        self.valueLabel.setStyleSheet(
+            'color: %s; background: transparent; border: none; '
+            'font-family: %s; font-size: %dpx; font-weight: 600;'
+            % (entry.color if state != stat.NORMAL else t.TEXT, t.FONT,
+               t.SIZE_MD))
+        self.stateLabel.setText(entry.label.upper())
+        self.stateLabel.setStyleSheet(
+            'color: %s; background: transparent; border: none; '
+            'font-family: %s; font-size: %dpx; font-weight: 700; '
+            'letter-spacing: 0.6px;' % (entry.color, t.FONT, t.SIZE_CAPTION))
 
 
 class EnvironmentCard(w.Card):
@@ -264,10 +479,18 @@ class EnvironmentCard(w.Card):
         self.linkPill = w.Pill('--', t.OFF, filled=False, size=12)
         self.modePill = w.Pill('--', t.OFF, filled=False, size=12)
 
-        self.doorNote = t.label('', size=10, color=t.TEXT_MUTED)
-        self.powerNote = t.label('', size=10, color=t.TEXT_MUTED)
-        self.linkNote = t.label('', size=10, color=t.TEXT_MUTED)
-        self.modeNote = t.label('', size=10, color=t.TEXT_MUTED)
+        # Wrapped: these sit in the narrow right-hand column, and left on one
+        # line "9 of 11 devices reporting" set a floor for the whole page.
+        # Wrapping lets the column give its width to the chips instead, which
+        # cannot shrink without losing letters.
+        self.doorNote = t.label('', size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+        self.powerNote = t.label('', size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+        self.linkNote = t.label('', size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+        self.modeNote = t.label('', size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+        for note in (self.doorNote, self.powerNote, self.linkNote,
+                     self.modeNote):
+            note.setWordWrap(True)
+            note.setMinimumWidth(64)
 
         rows = (
             ('Door', self.doorPill, self.doorNote, glossary.device('door')),
@@ -293,11 +516,11 @@ class EnvironmentCard(w.Card):
         if door == 'OPEN':
             color = (t.CRITICAL if seconds >= cfg.DOOR_ALARM_SECONDS else
                      t.WARN if seconds >= cfg.DOOR_WARNING_SECONDS else t.ACCENT)
-            self.doorPill.set('OPEN', color, '▲')
+            self.doorPill.set('OPEN', color, 'mark_warning')
             self.doorNote.setText('open %d s  ·  alarm at %d s'
                                   % (seconds, cfg.DOOR_ALARM_SECONDS))
         else:
-            self.doorPill.set('CLOSED', t.OK, '●')
+            self.doorPill.set('CLOSED', t.OK, 'mark_normal')
             operator = data.get('operator')
             self.doorNote.setText('shut' if not operator
                                   else 'last opened by %s' % operator)
@@ -305,17 +528,20 @@ class EnvironmentCard(w.Card):
         power = data.get('power', '--')
         battery = float(data.get('battery') or 0)
         if power == 'MAINS':
-            self.powerPill.set('MAINS', t.OK, '●')
+            self.powerPill.set('MAINS', t.OK, 'mark_normal')
         else:
             self.powerPill.set('BATTERY',
                                t.CRITICAL if battery <= cfg.BATTERY_ALARM_PERCENT
-                               else t.WARN, '▲')
+                               else t.WARN, 'mark_warning')
         self.powerNote.setText('battery at %.0f %%' % battery)
 
         connected = data.get('broker_connected', True)
         self.linkPill.set('ONLINE' if connected else 'OFFLINE',
                           t.OK if connected else t.CRITICAL,
-                          '●' if connected else '■')
+                          'mark_normal' if connected else 'mark_critical')
+        self.linkPill.setToolTip(stat.tooltip(
+            stat.NORMAL if connected else stat.CRITICAL,
+            'Connection to the broker'))
         counts = data.get('device_counts') or {}
         online = sum(v for k, v in counts.items() if k != 'OFFLINE')
         self.linkNote.setText('%d of %d devices reporting'
@@ -323,7 +549,7 @@ class EnvironmentCard(w.Card):
 
         mode = data.get('mode', '--')
         self.modePill.set(mode, t.ACCENT if mode == 'MAINTENANCE' else t.OK,
-                          '⚙' if mode == 'MAINTENANCE' else '●')
+                          'mark_maintenance' if mode == 'MAINTENANCE' else 'mark_normal')
         operator = data.get('mode_operator')
         self.modeNote.setText(('set by %s' % operator) if operator
                               else 'normal operation')
@@ -338,6 +564,8 @@ class DashboardPage(Page):
         super().__init__(console)
         self._range_hours = 24
         self._last_series_load = 0.0
+        self._open_incidents = 0
+        self._last_data = {}
 
         outer = page_layout(self)
         inner = QWidget()
@@ -348,6 +576,9 @@ class DashboardPage(Page):
 
         self.hero = HeroBanner()
         body.addWidget(self.hero)
+
+        self.healthStrip = SystemHealthStrip()
+        body.addWidget(self.healthStrip)
 
         columns = QHBoxLayout()
         columns.setSpacing(12)
@@ -467,6 +698,16 @@ class DashboardPage(Page):
         return column
 
     def _build_side_column(self):
+        """The narrow right-hand column: unit state, open work, live log.
+
+        The incident cards and the log are given an explicit floor and told to
+        ignore their own natural width: a compact incident card wants about
+        300 px for its headline and its two buttons, and letting three of those
+        set the column width pushed the whole page past the console's minimum
+        window size into a horizontal scrollbar. The unit-status card is left
+        alone - it holds fixed-size status chips, and squeezing it clipped
+        "BATTERY" down to "ATTER".
+        """
         column = QVBoxLayout()
         column.setSpacing(12)
 
@@ -477,22 +718,32 @@ class DashboardPage(Page):
             'Needs attention', 'Most serious first',
             help=glossary.term('incident'))
         self.incidentsEmpty = w.EmptyState(
-            '✓', 'Nothing needs attention',
-            'Every condition the system checks is currently normal.')
+            'shield', 'Nothing needs attention',
+            'Every condition the system checks is currently normal. Anything '
+            'that changes appears here, most serious first.', color=t.OK)
         self.incidentsCard.add(self.incidentsEmpty)
         self.incidentsBox = QVBoxLayout()
         self.incidentsBox.setSpacing(7)
         self.incidentsCard.add_layout(self.incidentsBox)
+        self._shrinkable(self.incidentsCard)
         column.addWidget(self.incidentsCard)
 
         self.feed = EventFeed()
         self.feed.setMinimumHeight(260)
+        self._shrinkable(self.feed)
         column.addWidget(self.feed, stretch=1)
         return column
 
+    @staticmethod
+    def _shrinkable(widget, minimum=208):
+        widget.setMinimumWidth(minimum)
+        widget.setSizePolicy(QSizePolicy.Ignored, widget.sizePolicy().verticalPolicy())
+
     # -- live state --------------------------------------------------------
     def apply_status(self, data):
+        self._last_data = data
         self.hero.update_state(data)
+        self.healthStrip.update_state(data, self._open_incidents)
         self.environment.update_state(data)
 
         stale = data.get('sensor_state') == 'OFFLINE'
@@ -507,11 +758,13 @@ class DashboardPage(Page):
             disagrees = delta is not None and delta > cfg.PROBE_DISAGREE_C
             self.probeTile.set_metric(
                 probe_b, t.CRITICAL if disagrees else t.OK,
-                suffix='' if delta is None else '  Δ%.1f' % delta)
+                suffix='' if delta is None else '  Δ%.1f' % delta,
+                state=stat.CRITICAL if disagrees else stat.NORMAL)
 
         ambient = data.get('ambient')
-        self.ambientTile.set_metric(
-            ambient, t.WARN if (ambient or 0) >= cfg.AMBIENT_WARNING_C else t.TEXT)
+        hot = (ambient or 0) >= cfg.AMBIENT_WARNING_C
+        self.ambientTile.set_metric(ambient, t.WARN if hot else t.TEXT,
+                                    state=stat.WARNING if hot else stat.NORMAL)
 
         self._update_actuators(data)
 
@@ -609,8 +862,11 @@ class DashboardPage(Page):
             return
 
         w.clear_layout(self.incidentsBox)
+        self._open_incidents = len(incidents)
         self.hero.set_action(self._recommended_action(incidents),
                              len(incidents))
+        if self._last_data:
+            self.healthStrip.update_state(self._last_data, len(incidents))
 
         if not incidents:
             self.incidentsEmpty.show()
@@ -626,6 +882,7 @@ class DashboardPage(Page):
 
         for incident in ordered[:4]:
             card = IncidentCard(incident, compact=True)
+            self._shrinkable(card, 190)
             card.acknowledged.connect(self.console.acknowledge_incident)
             card.resolved.connect(self.console.resolve_incident)
             self.incidentsBox.addWidget(card)

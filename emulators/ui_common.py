@@ -29,6 +29,7 @@ from config import mqtt_init as cfg
 from config import settings as thresholds
 from config.mqtt_client import MqttClient, parse_json
 from ui import help as h
+from ui import icons
 from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM, WARN,
                       apply_tooltip_style, label)
 
@@ -68,7 +69,9 @@ class EmulatorPanel(QFrame):
         if self.device is None:
             raise ValueError('unknown device id: %r' % device_id)
         self.role = device_id
-        self.window_title = '%s  %s' % (self.device.icon, self.device.label)
+        # ``device.icon`` names a drawing rather than holding a character,
+        # so the mark is painted into the header beside the title.
+        self.window_title = self.device.label
 
         self.faults = set()
         self._delay_tick = 0
@@ -83,6 +86,8 @@ class EmulatorPanel(QFrame):
 
         header = QHBoxLayout()
         header.setSpacing(10)
+        header.addWidget(icons.Icon(self.device.icon, 17, TEXT_DIM, width=1.6),
+                         alignment=Qt.AlignTop)
         titles = QVBoxLayout()
         titles.setSpacing(1)
         titleLabel = label(self.window_title, size=14, bold=True)
@@ -95,9 +100,12 @@ class EmulatorPanel(QFrame):
                    note='%d faults can be armed on it, from here or from the '
                         'console.' % len(self.device.faults))
         titles.addWidget(titleLabel)
-        titles.addWidget(label(self.device.describes, size=10, color=TEXT_DIM))
-        header.addLayout(titles)
-        header.addStretch()
+        # Wrapped, and given the row's spare width: unwrapped it was cut off
+        # mid-word at the edge of every card in the device panel.
+        describes = label(self.device.describes, size=10, color=TEXT_DIM)
+        describes.setWordWrap(True)
+        titles.addWidget(describes)
+        header.addLayout(titles, stretch=1)
         self.led = ConnectionLed()
         header.addWidget(self.led, alignment=Qt.AlignTop)
 

@@ -171,9 +171,9 @@ class SimulationsPage(Page):
             # Plain name in the heading, engineering name directly underneath:
             # the same pairing the Devices page uses, so a device can be found
             # by either of its names.
-            card = w.Card(
-                '%s  %s' % (device.icon, entry.name if entry else device.label),
-                '%s · %s' % (device.label, device.describes), help=entry)
+            card = w.Card(entry.name if entry else device.label,
+                          '%s · %s' % (device.label, device.describes),
+                          help=entry, icon=device.icon)
             for fault in device.faults:
                 key = '%s:%s' % (device.id, fault.id)
                 row = w.ToggleRow(key, fault.label, fault.description,
@@ -210,7 +210,7 @@ class SimulationsPage(Page):
         self.console.toast(
             '%s %s on %s' % (fault.label, 'armed' if active else 'cleared',
                              device.label),
-            t.SIM if active else t.OK, '⚠' if active else '✓')
+            t.SIM if active else t.OK, 'mark_simulated' if active else 'check')
 
     def _run_scenario(self, scenario):
         if not w.confirm(self.window(), 'Run "%s"?' % scenario.label,
@@ -221,11 +221,11 @@ class SimulationsPage(Page):
         for device_id, fault_id in scenario.faults:
             self.console.set_fault(device_id, fault_id, True)
         self.console.toast('Scenario "%s" is running' % scenario.label,
-                           t.SIM, '⚠')
+                           t.SIM, 'mark_simulated')
 
     def _reset_all(self):
         if not any(row.is_active() for row in self.rows.values()):
-            self.console.toast('No simulations are armed', t.TEXT_DIM, 'ⓘ')
+            self.console.toast('No simulations are armed', t.TEXT_DIM, 'info')
             return
         if not w.confirm(self.window(), 'Reset every simulation?',
                          'All armed faults will be cleared on every device.',
@@ -249,5 +249,5 @@ class SimulationsPage(Page):
         count = len(armed)
         self.activePill.set('%d armed' % count,
                             t.SIM if count else t.TEXT_MUTED,
-                            '⚠' if count else '○')
+                            'mark_simulated' if count else 'mark_offline')
         self.resetButton.setEnabled(count > 0)

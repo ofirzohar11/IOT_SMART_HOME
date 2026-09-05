@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import (QDialog, QFrame, QGraphicsOpacityEffect,
                              QVBoxLayout, QWidget)
 
 from ui import help as h
+from ui import icons
+from ui import status as stat
 from ui import theme as t
 
 
@@ -56,7 +58,7 @@ class Card(QFrame):
     """A titled panel. ``body`` is the layout subclasses and pages fill."""
 
     def __init__(self, title=None, subtitle=None, actions=None, padding=16,
-                 help=None):
+                 help=None, icon=None, icon_color=None):
         super().__init__()
         self.setObjectName('panel')
         self.setStyleSheet(t.panel_style())
@@ -81,6 +83,10 @@ class Card(QFrame):
             headingRow = QHBoxLayout(heading)
             headingRow.setContentsMargins(0, 0, 0, 0)
             headingRow.setSpacing(6)
+            if icon:
+                headingRow.addWidget(
+                    icons.Icon(icon, 15, icon_color or t.TEXT_DIM, width=1.6),
+                    alignment=Qt.AlignVCenter)
             headingRow.addWidget(t.caption(title))
             if help is not None:
                 headingRow.addWidget(help.dot(size=12) if hasattr(help, 'dot')
@@ -136,46 +142,128 @@ class SectionTitle(QWidget):
 # ===========================================================================
 #  Indicators
 # ===========================================================================
-class Pill(QLabel):
-    """A compact status chip. Always pairs its colour with a glyph and a word."""
+class Pill(QFrame):
+    """A compact status chip: a painted mark, then a word, then a colour.
 
-    def __init__(self, text='', color=t.OFF, filled=True, glyph=None, size=11):
+    The mark is drawn rather than typed. The geometric characters this used to
+    print - a filled square for critical, a gear for maintenance - are absent
+    from the default UI font on macOS, Windows and Linux alike, so Qt
+    substituted a different font for each one and a row of chips came out as a
+    row of mismatched sizes. Painting them also means the mark scales with the
+    chip instead of with whatever fallback font Qt happened to find.
+    """
+
+    def __init__(self, text='', color=t.OFF, filled=True, mark=None, size=11):
         super().__init__()
-        self.setAlignment(Qt.AlignCenter)
         self._filled = filled
         self._size = size
-        self.set(text, color, glyph)
+        self._color = color
+        self.setObjectName('pill')
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
-    def set(self, text, color, glyph=None):
-        self.setText(('%s  %s' % (glyph, text)) if glyph else text)
-        self.setStyleSheet(t.pill_style(color, self._filled, self._size))
+        row = QHBoxLayout(self)
+        row.setContentsMargins(9, 3, 9, 3)
+        row.setSpacing(6)
+        self.markIcon = icons.Icon(mark or 'mark_offline', size + 1, color,
+                                   width=1.5)
+        self.textLabel = QLabel(text)
+        self.textLabel.setAlignment(Qt.AlignCenter)
+        row.addWidget(self.markIcon, alignment=Qt.AlignVCenter)
+        row.addWidget(self.textLabel, alignment=Qt.AlignVCenter)
+        self.set(text, color, mark)
+
+    # ``glyph`` is accepted under its old name so nothing that still passes a
+    # character positionally breaks; a one-character value is simply ignored
+    # now that the mark is painted.
+    def set(self, text, color, mark=None):
+        self._color = color
+        if mark and mark in icons.ICONS:
+            self.markIcon.set_name(mark)
+            self.markIcon.show()
+        elif mark is None:
+            self.markIcon.hide()
+        self.markIcon.set_color('#08111F' if self._filled else color)
+        self.textLabel.setText(str(text))
+        text_color = '#08111F' if self._filled else color
+        self.textLabel.setStyleSheet(
+            'color: %s; background: transparent; border: none; '
+            'font-family: %s; font-size: %dpx; font-weight: %s; '
+            'letter-spacing: 0.3px;'
+            % (text_color, t.FONT, self._size, '700' if self._filled else '600'))
+        if self._filled:
+            self.setStyleSheet('QFrame#pill { background-color: %s; '
+                               'border: 1px solid %s; border-radius: %dpx; }'
+                               % (color, color, t.RADIUS_SM))
+        else:
+            self.setStyleSheet('QFrame#pill { background: transparent; '
+                               'border: 1px solid %s; border-radius: %dpx; }'
+                               % (color, t.RADIUS_SM))
+
+    def set_state(self, state, text=None, note=''):
+        """Show one of the six canonical states, with its standard wording."""
+        entry = stat.get(state)
+        self.set(text if text is not None else entry.label.upper(),
+                 entry.color, entry.mark)
+        self.setToolTip(stat.tooltip(state, extra=note))
+        return self
+
+
+class StatusChip(Pill):
+    """A Pill that only ever shows one of the six canonical states."""
+
+    def __init__(self, state=stat.NORMAL, filled=False, size=11, text=None):
+        entry = stat.get(state)
+        super().__init__(text if text is not None else entry.label.upper(),
+                         entry.color, filled, entry.mark, size)
+        self.setToolTip(stat.tooltip(state))
 
 
 class LevelPill(Pill):
+    """An alert severity, resolved through the shared status vocabulary."""
+
     def __init__(self, level=None, filled=True, size=11):
         super().__init__('', t.OFF, filled, size=size)
         if level:
             self.set_level(level)
 
     def set_level(self, level, text=None):
-        self.set(text or level, t.level_color(level), t.level_glyph(level))
+        state = stat.from_level(level)
+        entry = stat.get(state)
+        self.set(text or entry.label.upper(), entry.color, entry.mark)
+        self.setToolTip(stat.tooltip(state, 'Severity: %s' % entry.label))
 
 
 class HealthPill(Pill):
+    """A device health, resolved through the same vocabulary.
+
+    The engineering term (CONNECTED, DEGRADED, FAULT) is kept in the tooltip so
+    nothing is lost, but the word on screen is the one used everywhere else in
+    the console.
+    """
+
     def __init__(self, health=None, size=10):
         super().__init__('', t.OFF, filled=False, size=size)
         if health:
             self.set_health(health)
 
     def set_health(self, health):
-        self.set(health, t.health_color(health), t.health_glyph(health))
+        state = stat.from_health(health)
+        entry = stat.get(state)
+        self.set(entry.label.upper(), entry.color, entry.mark)
+        self.setToolTip(stat.tooltip(
+            state, 'Device status: %s' % entry.label,
+            extra=stat.HEALTH_TERMS.get(health, '')))
 
 
 class StatTile(QFrame):
     """A caption with one number or short phrase above it."""
 
+    # Wide enough that the value itself never loses a character: the backup
+    # thermometer tile reads "6.1 °C  Δ5.3" in a monospaced face, and a
+    # narrower floor clipped it to "6.1 °C  Δ5." - a stat tile that drops a
+    # digit is worse than one that forces the window a little wider.
     def __init__(self, caption_text, value_size=21, wrap=False, mono=True,
-                 minimum_width=118, help=None):
+                 minimum_width=116, help=None):
         super().__init__()
         self.value_size = value_size
         self.mono = mono
@@ -189,6 +277,10 @@ class StatTile(QFrame):
         self.valueLabel = t.label('--', size=value_size, bold=True, mono=mono)
         self.valueLabel.setWordWrap(wrap)
         self.captionLabel = t.caption(caption_text, color=t.TEXT_MUTED)
+        # Wrapped, not clipped: eight of these share one row on the History
+        # page, and a caption like "MINUTES OUT OF RANGE" has no chance of
+        # fitting on one line at the console's minimum window width.
+        self.captionLabel.setWordWrap(True)
         layout.addWidget(self.valueLabel)
         layout.addWidget(self.captionLabel)
         if help is not None:
@@ -230,22 +322,79 @@ class KeyValue(QWidget):
 
 
 class EmptyState(QWidget):
-    """Shown instead of a blank area when a list has nothing in it."""
+    """Shown instead of a blank area when a list has nothing in it.
 
-    def __init__(self, glyph, title, detail=''):
+    An empty list is ambiguous - it can mean "nothing has happened" or "this is
+    still loading" or "your filter excluded everything". Each one says which,
+    and what would put something here.
+    """
+
+    def __init__(self, icon, title, detail='', color=None):
         super().__init__()
+        color = color or t.TEXT_MUTED
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(6)
-        layout.addWidget(t.label(glyph, size=30, color=t.OFF,
-                                 align=Qt.AlignCenter))
-        layout.addWidget(t.label(title, size=13, color=t.TEXT_DIM, bold=True,
-                                 align=Qt.AlignCenter))
+        layout.setContentsMargins(12, 18, 12, 18)
+        layout.setSpacing(t.SPACE_SM)
+
+        holder = QWidget()
+        holder.setStyleSheet('background: transparent;')
+        holderRow = QHBoxLayout(holder)
+        holderRow.setContentsMargins(0, 0, 0, 0)
+        holderRow.addStretch()
+        holderRow.addWidget(icons.Icon(icon if icon in icons.ICONS else 'info',
+                                       30, color, width=1.5))
+        holderRow.addStretch()
+        layout.addWidget(holder)
+
+        layout.addWidget(t.label(title, size=t.SIZE_BASE, color=t.TEXT_DIM,
+                                 bold=True, align=Qt.AlignCenter))
         if detail:
-            note = t.label(detail, size=11, color=t.TEXT_MUTED,
+            note = t.label(detail, size=t.SIZE_XS, color=t.TEXT_MUTED,
                            align=Qt.AlignCenter)
             note.setWordWrap(True)
             layout.addWidget(note)
+
+
+class LoadingState(QWidget):
+    """Shown while a database-backed panel is still being read."""
+
+    def __init__(self, text='Loading…'):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(12, 18, 12, 18)
+        layout.setSpacing(t.SPACE_SM)
+        layout.addWidget(t.label(text, size=t.SIZE_SM, color=t.TEXT_MUTED,
+                                 align=Qt.AlignCenter))
+
+
+class ErrorState(QWidget):
+    """Shown when a panel could not load, with what to do about it."""
+
+    def __init__(self, title='Could not load this', detail=''):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(12, 18, 12, 18)
+        layout.setSpacing(t.SPACE_SM)
+
+        holder = QWidget()
+        holder.setStyleSheet('background: transparent;')
+        holderRow = QHBoxLayout(holder)
+        holderRow.setContentsMargins(0, 0, 0, 0)
+        holderRow.addStretch()
+        holderRow.addWidget(icons.Icon('mark_warning', 26, t.WARN, width=1.5))
+        holderRow.addStretch()
+        layout.addWidget(holder)
+        layout.addWidget(t.label(title, size=t.SIZE_BASE, color=t.WARN,
+                                 bold=True, align=Qt.AlignCenter))
+        note = t.label(detail or 'The stored record could not be read. The '
+                                 'live readings above are unaffected.',
+                       size=t.SIZE_XS, color=t.TEXT_MUTED,
+                       align=Qt.AlignCenter)
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
 
 # ===========================================================================
@@ -254,7 +403,8 @@ class EmptyState(QWidget):
 class Toast(QFrame):
     """A short-lived confirmation that fades out on its own."""
 
-    def __init__(self, parent, text, color=t.ACCENT, glyph='✓', duration=3200):
+    def __init__(self, parent, text, color=t.ACCENT, mark='check',
+                 duration=3200):
         super().__init__(parent)
         self.setObjectName('toast')
         self.setStyleSheet(
@@ -266,8 +416,10 @@ class Toast(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(13, 10, 15, 10)
         row.setSpacing(10)
-        row.addWidget(t.label(glyph, size=14, color=color))
-        message = t.label(text, size=12)
+        row.addWidget(icons.Icon(mark if mark in icons.ICONS else 'info', 15,
+                                 color, width=1.6),
+                      alignment=Qt.AlignTop)
+        message = t.label(text, size=t.SIZE_SM)
         message.setWordWrap(True)
         row.addWidget(message, stretch=1)
 
@@ -304,8 +456,8 @@ class ToastHost(QWidget):
         self._toasts = []
         self.setGeometry(parent.rect())
 
-    def show_toast(self, text, color=t.ACCENT, glyph='✓', duration=3200):
-        toast = Toast(self.parentWidget(), text, color, glyph, duration)
+    def show_toast(self, text, color=t.ACCENT, mark='check', duration=3200):
+        toast = Toast(self.parentWidget(), text, color, mark, duration)
         toast.destroyed.connect(lambda: self._forget(toast))
         self._toasts.append(toast)
         if len(self._toasts) > 4:
@@ -361,11 +513,12 @@ class ConfirmDialog(QDialog):
 
         heading = QHBoxLayout()
         heading.setSpacing(11)
-        heading.addWidget(t.label('⚠' if danger else 'ⓘ', size=19, color=accent),
+        heading.addWidget(icons.Icon('mark_warning' if danger else 'info', 20,
+                                     accent, width=1.7),
                           alignment=Qt.AlignTop)
         headingText = QVBoxLayout()
         headingText.setSpacing(5)
-        headingText.addWidget(t.label(title, size=15, bold=True))
+        headingText.addWidget(t.label(title, size=t.SIZE_MD, bold=True))
         body = t.label(message, size=12, color=t.TEXT_DIM)
         body.setWordWrap(True)
         headingText.addWidget(body)
@@ -473,8 +626,17 @@ class ToggleRow(QFrame):
 
         text = QVBoxLayout()
         text.setSpacing(2)
-        self.titleLabel = t.label(title, size=12, bold=True)
-        text.addWidget(self.titleLabel)
+        titleRow = QHBoxLayout()
+        titleRow.setContentsMargins(0, 0, 0, 0)
+        titleRow.setSpacing(6)
+        self.armedMark = icons.Icon(stat.mark(stat.SIMULATED), 11, t.SIM,
+                                    width=1.5)
+        self.armedMark.hide()
+        self.titleLabel = t.label(title, size=t.SIZE_SM, bold=True)
+        titleRow.addWidget(self.armedMark, alignment=Qt.AlignVCenter)
+        titleRow.addWidget(self.titleLabel)
+        titleRow.addStretch()
+        text.addLayout(titleRow)
         note = t.label(description, size=10, color=t.TEXT_MUTED)
         note.setWordWrap(True)
         text.addWidget(note)
@@ -506,6 +668,10 @@ class ToggleRow(QFrame):
         return self._active
 
     def _paint_frame(self):
+        if hasattr(self, 'armedMark'):
+            self.armedMark.setVisible(self._active)
+            self.titleLabel.setToolTip(
+                stat.tooltip(stat.SIMULATED) if self._active else '')
         color = t.SIM if self._active else t.BORDER
         self.setStyleSheet(
             'QFrame#toggleRow { background-color: %s; border: 1px solid %s; '

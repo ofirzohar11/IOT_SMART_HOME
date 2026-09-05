@@ -14,6 +14,8 @@ from database import db
 from gui import charts, glossary
 from gui.pages.base import Page, page_layout, scrollable
 from ui import help as h
+from ui import icons
+from ui import status as stat
 from ui import theme as t
 from ui import widgets as w
 
@@ -50,7 +52,7 @@ READING_COLUMNS = [
 ]
 EVENT_COLUMNS = [
     ('Time', 'When the system reported this.'),
-    ('Level', 'Info, Warning or Critical.'),
+    ('Level', 'Normal, Warning or Critical.'),
     ('Code', 'The internal name of the rule that fired.'),
     ('Message', 'What the rule reported, in its own words.'),
     ('Operator', 'The staff member involved, where one is known.'),
@@ -87,7 +89,7 @@ class HistoryPage(Page):
                 'It is the audit trail. When somebody asks what the fridge was '
                 'doing at 03:40 last Tuesday, this is the answer.',
                 note='Hover any column heading to see what it means.')))
-        self.readingsTable = self._make_table(READING_COLUMNS, even=True)
+        self.readingsTable = self._make_table(READING_COLUMNS)
         self.readingsTable.setMinimumHeight(260)
         body.addWidget(self.readingsTable)
         body.addWidget(w.SectionTitle(
@@ -132,7 +134,7 @@ class HistoryPage(Page):
                           'anything wrong while I was away? - without reading '
                           'a single table row.'))
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(t.SPACE_SM)
         self.tiles = {}
         tiles = (
             ('samples', 'readings stored', h.Explain(
@@ -155,7 +157,8 @@ class HistoryPage(Page):
                 'A healthy average can still hide a short excursion, so read '
                 'it beside the warmest and coldest figures.',
                 glossary.TARGET)),
-            ('excursion', 'minutes out of range', glossary.metric('excursion')),
+            ('excursion', 'minutes out of range',
+             glossary.metric('excursion')),
             ('door_events', 'door openings', h.Explain(
                 'Door openings',
                 'How many times the door was opened in this period.',
@@ -172,7 +175,9 @@ class HistoryPage(Page):
                 'Each one is a moment when the stock was at risk.', 'Zero.')),
         )
         for key, caption, explain in tiles:
-            tile = w.StatTile(caption, help=explain)
+            # Eight in one row, and every value here is short ("2394",
+            # "22.4 °C"), so these get a narrower floor than the default.
+            tile = w.StatTile(caption, minimum_width=106, help=explain)
             self.tiles[key] = tile
             row.addWidget(tile)
         card.add_layout(row)
@@ -190,14 +195,16 @@ class HistoryPage(Page):
         self.humidityChart = charts.TimeSeriesChart(
             [charts.Trace('humidity_avg', 'Humidity', t.ACCENT, fill=True, unit=' %')],
             0, 100,
-            bands=[charts.Band(cfg.HUM_TARGET_MIN, cfg.HUM_TARGET_MAX, t.OK)],
+            bands=[charts.Band(cfg.HUM_TARGET_MIN, cfg.HUM_TARGET_MAX, t.OK,
+                               label='Safe range')],
             thresholds=[charts.Threshold(cfg.HUM_ALARM_MAX, t.CRITICAL)],
-            unit=' %', title='Humidity', minimum_height=190)
+            unit=' %', title='Humidity (%)', minimum_height=200)
         self.plantChart = charts.TimeSeriesChart(
             [charts.Trace('current_avg', 'Cooling motor', t.WARN, unit=' A')],
             0, 14,
             thresholds=[charts.Threshold(cfg.CURRENT_OVERLOAD_A, t.CRITICAL)],
-            unit=' A', title='Cooling motor power', minimum_height=190)
+            unit=' A', title='Cooling motor current (A)',
+            minimum_height=200)
         glossary.metric('humidity').apply(
             self.humidityChart,
             note='The green band is the safe range; the dashed red line is the '
@@ -217,11 +224,11 @@ class HistoryPage(Page):
             0, 1800,
             thresholds=[charts.Threshold(cfg.FAN_RPM_MIN, t.CRITICAL),
                         charts.Threshold(cfg.FAN_RPM_DEGRADED, t.WARN)],
-            unit=' rpm', title='Fan speed', minimum_height=190)
+            unit=' rpm', title='Fan speed (rpm)', minimum_height=200)
         self.activityChart = charts.StateTimeline(
             [('door_open', 'Door open', t.WARN),
              ('compressor_on', 'Cooling', t.ACCENT),
-             ('fan_on', 'Fan', t.OK)], minimum_height=190)
+             ('fan_on', 'Fan', t.OK)], minimum_height=200)
         glossary.device('fan_rpm').apply(
             self.fanChart, 'Fan speed',
             note='The upper dashed line is the worn-bearing threshold; below '
@@ -238,7 +245,7 @@ class HistoryPage(Page):
         layout.addLayout(bottom)
         return container
 
-    def _make_table(self, columns, even=False):
+    def _make_table(self, columns):
         table = QTableWidget(0, len(columns))
         table.setHorizontalHeaderLabels([name for name, _tip in columns])
         for index, (_name, tip) in enumerate(columns):
@@ -251,11 +258,14 @@ class HistoryPage(Page):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setStyleSheet(t.TABLE_STYLE + t.SCROLLBAR)
         header = table.horizontalHeader()
-        if even:
-            header.setSectionResizeMode(QHeaderView.Stretch)
-        else:
-            header.setSectionResizeMode(QHeaderView.ResizeToContents)
-            header.setStretchLastSection(True)
+        # Sized to content, never squeezed to fit. Stretching fifteen columns
+        # into the width of the page cut headings in half ("Opened by" became
+        # "Jpened b"); a wide audit table is allowed to scroll inside its own
+        # frame instead, which is the one place horizontal scrolling belongs.
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(56)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         return table
 
     # -- data --------------------------------------------------------------
@@ -277,6 +287,11 @@ class HistoryPage(Page):
             events = db.recent_events(180)
         except Exception as error:
             print('history: could not load:', error)
+            self.console.toast('Could not read the stored record', t.WARN,
+                               'mark_warning')
+            for chart in (self.humidityChart, self.plantChart, self.fanChart):
+                chart.set_rows([])
+            self.activityChart.set_rows([])
             return
 
         self._fill_tiles(stats)
@@ -290,9 +305,26 @@ class HistoryPage(Page):
         def number(value, suffix=''):
             return '--' if value is None else ('%.1f%s' % (value, suffix))
 
+        def band_color(value, below_is_cold):
+            """Colour a recorded extreme by whether it actually breached."""
+            if value is None:
+                return t.TEXT_MUTED
+            if below_is_cold:
+                if value < cfg.TEMP_ALARM_MIN:
+                    return t.CRITICAL
+                return t.WARN if value < cfg.TEMP_TARGET_MIN else t.OK
+            if value > cfg.TEMP_ALARM_MAX:
+                return t.CRITICAL
+            return t.WARN if value > cfg.TEMP_TARGET_MAX else t.OK
+
         self.tiles['samples'].set_value(str(stats['samples']))
-        self.tiles['temp_min'].set_value(number(stats['temp_min'], ' °C'), t.ACCENT)
-        self.tiles['temp_max'].set_value(number(stats['temp_max'], ' °C'), t.ACCENT)
+        # These two used to be painted a calm accent blue whatever they said,
+        # so a period whose warmest reading was 22 °C looked no different from
+        # one that never left the band.
+        self.tiles['temp_min'].set_value(number(stats['temp_min'], ' °C'),
+                                         band_color(stats['temp_min'], True))
+        self.tiles['temp_max'].set_value(number(stats['temp_max'], ' °C'),
+                                         band_color(stats['temp_max'], False))
         self.tiles['temp_avg'].set_value(number(stats['temp_avg'], ' °C'))
         excursion = stats['excursion_minutes']
         self.tiles['excursion'].set_value('%.1f' % excursion,
@@ -325,12 +357,25 @@ class HistoryPage(Page):
             for c, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if c == 14:
-                    item.setForeground(QColor(t.level_color(level)))
+                    # A severity carried by the colour of the word alone is
+                    # invisible to a colour-blind reader and to a printout, so
+                    # the row's verdict gets the same painted mark the rest of
+                    # the console uses.
+                    state = stat.from_level(level)
+                    entry = stat.get(state)
+                    item.setText(entry.label)
+                    item.setIcon(icons.icon(entry.mark, 11, entry.color))
+                    item.setForeground(QColor(entry.color))
+                    item.setToolTip('%s - %s' % (entry.label, entry.what))
                 elif c == 1 and temp is not None and not (
                         cfg.TEMP_TARGET_MIN <= temp <= cfg.TEMP_TARGET_MAX):
                     item.setForeground(QColor(t.WARN))
+                    item.setText('%s !' % value)
+                    item.setToolTip('Outside the %s storage band.'
+                                    % glossary.TARGET)
                 elif c == 6 and operator == cfg.UNKNOWN_OPERATOR:
                     item.setForeground(QColor(t.WARN))
+                    item.setToolTip('The door was opened without a badge.')
                 self.readingsTable.setItem(r, c, item)
 
     def _fill_events(self, rows):
@@ -342,9 +387,17 @@ class HistoryPage(Page):
             for c, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if c == 1:
-                    item.setForeground(QColor(t.level_color(level)))
+                    state = stat.from_level(level)
+                    entry = stat.get(state)
+                    item.setText(entry.label)
+                    item.setIcon(icons.icon(entry.mark, 11, entry.color))
+                    item.setForeground(QColor(entry.color))
+                    item.setToolTip('%s - %s' % (entry.label, entry.what))
                 elif c == 6 and simulated:
                     item.setForeground(QColor(t.SIM))
+                    item.setIcon(icons.icon(stat.mark(stat.SIMULATED), 11,
+                                            t.SIM))
+                    item.setToolTip(stat.get(stat.SIMULATED).what)
                 self.eventsTable.setItem(r, c, item)
 
     def export_csv(self):

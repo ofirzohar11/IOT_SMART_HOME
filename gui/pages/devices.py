@@ -3,14 +3,19 @@
 from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 from config import devices as registry
+from database import db
 from gui import glossary
 from gui.components import DeviceCard
 from gui.pages.base import Page, page_layout, scrollable
 from ui import help as h
+from ui import status as stat
 from ui import theme as t
 from ui import widgets as w
 
-COLUMNS = 4
+# Three across rather than four: each card now carries its location, what it
+# measures, why it matters and - when something is wrong - the recommended
+# action, and four columns squeezed those into unreadable ribbons.
+COLUMNS = 3
 
 # How to render each device's headline value from the status snapshot.
 VALUE_FIELDS = {
@@ -35,6 +40,7 @@ class DevicesPage(Page):
     def __init__(self, console):
         super().__init__(console)
         self.cards = {}
+        self._incidents = {}        # device id -> open incidents
 
         outer = page_layout(self)
         inner = QWidget()
@@ -62,6 +68,9 @@ class DevicesPage(Page):
             for index, device in enumerate(members):
                 card = DeviceCard(device)
                 self.cards[device.id] = card
+                # Deliberately stretched rather than top-aligned: a row of
+                # cards with ragged bottoms reads as a broken layout, and each
+                # card packs its content to the top anyway.
                 grid.addWidget(card, index // COLUMNS, index % COLUMNS)
             for column in range(COLUMNS):
                 grid.setColumnStretch(column, 1)
@@ -70,30 +79,61 @@ class DevicesPage(Page):
         body.addStretch()
         outer.addWidget(scrollable(inner))
 
+    # The five health states the data manager reports, in the order an
+    # operator triages them, each shown under the console-wide status word.
+    SUMMARY_ORDER = ('CONNECTED', 'DEGRADED', 'FAULT', 'OFFLINE', 'MAINTENANCE')
+
     def _build_summary(self):
         card = w.Card(
             'Fleet status',
             'How many devices are in each state right now',
             help=glossary.term('health'))
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(t.SPACE_SM)
         self.tiles = {}
-        for health in ('CONNECTED', 'DEGRADED', 'FAULT', 'OFFLINE', 'MAINTENANCE'):
-            entry = glossary.health(health)
-            tile = w.StatTile(health.lower(), help=entry)
-            tile.set_value('0', t.health_color(health))
+        for health in self.SUMMARY_ORDER:
+            state = stat.from_health(health)
+            entry = stat.get(state)
+            tile = w.StatTile(entry.label, help=h.Explain(
+                entry.label, entry.what, entry.why,
+                note=stat.HEALTH_TERMS.get(health, '')))
+            tile.set_value('0', entry.color)
             self.tiles[health] = tile
             row.addWidget(tile)
         card.add_layout(row)
         # The five words are meaningless on their own, and this is the first
         # thing somebody reads on a page they have never opened.
         card.add(h.InlineNote(
-            'Connected = reporting on schedule.   Degraded = still reporting, '
-            'but something is wrong.   Fault = its readings contradict what '
-            'the equipment was told to do.   Offline = it has stopped '
-            'reporting, so whatever it was checking is no longer checked.   '
-            'Maintenance = deliberately excused while the unit is serviced.'))
+            'Normal = reporting on schedule and inside its expected range.   '
+            'Warning = still reporting, but something is outside that range.   '
+            'Critical = its readings contradict what the equipment was told to '
+            'do.   Offline = it has stopped reporting, so whatever it was '
+            'checking is no longer checked.   Maintenance = deliberately '
+            'excused while the unit is serviced.'))
         return card
+
+    # -- incidents ---------------------------------------------------------
+    def _load_incidents(self):
+        """Group the open incidents by device, for the cards to show."""
+        grouped = {}
+        try:
+            for row in db.active_incidents():
+                device_id = row.get('device')
+                if device_id:
+                    grouped.setdefault(device_id, []).append(row)
+        except Exception as error:
+            print('devices: could not load incidents:', error)
+            return
+        self._incidents = grouped
+
+    def on_shown(self):
+        self._load_incidents()
+
+    def apply_alert(self, record):
+        self._load_incidents()
+
+    def refresh_incidents(self):
+        self._load_incidents()
 
     def apply_status(self, data):
         health_map = data.get('device_health') or {}
@@ -105,7 +145,8 @@ class DevicesPage(Page):
             health = health_map.get(device_id, 'OFFLINE')
             counts[health] = counts.get(health, 0) + 1
             card.update_state(health, self._value_text(device_id, data),
-                              ages.get(device_id), faults.get(device_id) or [])
+                              ages.get(device_id), faults.get(device_id) or [],
+                              self._incidents.get(device_id) or [])
             value = self._numeric(device_id, data)
             if value is not None and health != 'OFFLINE':
                 card.spark.add(value)
@@ -114,7 +155,8 @@ class DevicesPage(Page):
         for health, tile in self.tiles.items():
             count = counts.get(health, 0)
             tile.set_value(str(count),
-                           t.health_color(health) if count else t.TEXT_MUTED)
+                           stat.color(stat.from_health(health)) if count
+                           else t.TEXT_MUTED)
 
     def _value_text(self, device_id, data):
         spec = VALUE_FIELDS.get(device_id)

@@ -49,10 +49,16 @@ class IncidentsPage(Page):
         self.listLayout.setContentsMargins(0, 0, 6, 6)
         self.listLayout.setSpacing(8)
         self.empty = w.EmptyState(
-            '✓', 'Nothing to show',
-            'No incidents match these filters. Try a wider time range, or set '
-            'the filters back to "All".')
+            'shield', 'No incidents match these filters',
+            'Widen the time range, or set the filters back to "All". If every '
+            'filter is already open, nothing has gone wrong in this period.')
+        self.error = w.ErrorState(
+            'Could not read the incident record',
+            'The stored database could not be opened. Live monitoring is '
+            'unaffected - the dashboard is still current.')
+        self.error.hide()
         self.listLayout.addWidget(self.empty)
+        self.listLayout.addWidget(self.error)
         self.listLayout.addStretch()
         outer.addWidget(scrollable(inner), stretch=1)
 
@@ -153,8 +159,13 @@ class IncidentsPage(Page):
         try:
             rows = db.incidents(hours=self._hours, limit=400)
         except Exception as error:
+            # Say so on screen. Returning silently left the last successful
+            # list on display, which is indistinguishable from a fresh one.
             print('incidents: could not load:', error)
+            self.empty.hide()
+            self.error.show()
             return
+        self.error.hide()
 
         severity = self.severityBox.currentText()
         device_id = self.deviceBox.currentData()
@@ -186,7 +197,7 @@ class IncidentsPage(Page):
         for index in reversed(range(self.listLayout.count())):
             item = self.listLayout.itemAt(index)
             widget = item.widget() if item else None
-            if widget is not None and widget is not self.empty:
+            if widget is not None and widget not in (self.empty, self.error):
                 self.listLayout.takeAt(index)
                 w.discard(widget)
 

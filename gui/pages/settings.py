@@ -22,7 +22,7 @@ storage band whose edges have crossed - and Cancel puts every field back.
 
 import importlib
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLineEdit, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -31,6 +31,7 @@ from config import settings as thresholds
 from gui import glossary
 from gui.pages.base import Page, page_layout, scrollable
 from ui import help as h
+from ui import icons
 from ui import theme as t
 from ui import widgets as w
 
@@ -43,7 +44,7 @@ EFFECT_STYLE = {
     thresholds.EFFECT_CONTROL: (t.ACCENT, 'CONTROL',
                                 'This switches hardware. It raises no alert of '
                                 'its own.'),
-    thresholds.EFFECT_BASELINE: (t.TEXT_MUTED, 'REFERENCE',
+    thresholds.EFFECT_BASELINE: (t.TEXT_DIM, 'REFERENCE',
                                  'A healthy reference value. It raises no alert '
                                  'of its own.'),
 }
@@ -52,7 +53,7 @@ BASIS_STYLE = {
     thresholds.BASIS_RESEARCH: (t.OK, 'RESEARCH',
                                 'This default comes from published cold-chain '
                                 'guidance, named underneath.'),
-    thresholds.BASIS_PROJECT: (t.TEXT_MUTED, 'PROJECT',
+    thresholds.BASIS_PROJECT: (t.TEXT_DIM, 'PROJECT',
                                'No published standard fixes this number. It is '
                                'a decision made for this project, and the '
                                'reasoning is given underneath.'),
@@ -113,10 +114,13 @@ class SettingRow(QFrame):
                    note=setting.source)
         head.addWidget(self.recommendedLabel)
 
-        self.resetButton = QPushButton('↺')
-        self.resetButton.setFixedWidth(30)
+        self.resetButton = QPushButton('')
+        self.resetButton.setFixedWidth(32)
         self.resetButton.setCursor(Qt.PointingHandCursor)
         self.resetButton.setStyleSheet(t.ghost_button_style(t.ACCENT))
+        self.resetButton.setIcon(icons.icon('gear', 13, t.ACCENT))
+        self.resetButton.setIconSize(QSize(13, 13))
+        self.resetButton.setAccessibleName('Restore recommended value')
         h.set_tip(self.resetButton,
                   'Put %s back to its recommended %s'
                   % (setting.label.lower(),
@@ -131,9 +135,16 @@ class SettingRow(QFrame):
         layout.addWidget(what)
 
         # -- what crossing it does ----------------------------------------
-        effect = t.label('→  ' + setting.effect, size=11, color=effect_color)
+        effectRow = QHBoxLayout()
+        effectRow.setContentsMargins(0, 0, 0, 0)
+        effectRow.setSpacing(7)
+        effectRow.addWidget(icons.Icon('arrow_right', 12, effect_color,
+                                       width=1.5),
+                            alignment=Qt.AlignTop)
+        effect = t.label(setting.effect, size=t.SIZE_XS, color=effect_color)
         effect.setWordWrap(True)
-        layout.addWidget(effect)
+        effectRow.addWidget(effect, stretch=1)
+        layout.addLayout(effectRow)
 
         # -- where the number came from ------------------------------------
         prefix = ('Research basis' if setting.basis == thresholds.BASIS_RESEARCH
@@ -468,13 +479,13 @@ class SettingsPage(Page):
             self.console.toast(
                 '%d setting%s could not be applied - see the rows outlined in '
                 'red' % (len(errors), '' if len(errors) == 1 else 's'),
-                t.CRITICAL, '■')
+                t.CRITICAL, 'mark_critical')
             return
 
         previous = self._saved()
         changed = [key for key in clean if clean[key] != previous.get(key)]
         if not changed:
-            self.console.toast('Nothing to apply', t.TEXT_DIM, 'ⓘ')
+            self.console.toast('Nothing to apply', t.TEXT_DIM, 'info')
             return
 
         # Only the differences are stored, so a later change to a recommended
@@ -485,7 +496,7 @@ class SettingsPage(Page):
             thresholds.save(overrides)
         except Exception as error:
             self.console.toast('Could not save settings: %s' % error,
-                               t.CRITICAL, '■')
+                               t.CRITICAL, 'mark_critical')
             return
 
         thresholds.apply_to(cfg, clean)
@@ -494,7 +505,7 @@ class SettingsPage(Page):
         self.reload()
         self.console.toast('%d threshold%s applied'
                            % (len(changed), '' if len(changed) == 1 else 's'),
-                           t.OK, '✓')
+                           t.OK, 'check')
 
     def restore_defaults(self):
         if not w.confirm(
@@ -510,13 +521,13 @@ class SettingsPage(Page):
             thresholds.clear()
         except Exception as error:
             self.console.toast('Could not clear the saved settings: %s' % error,
-                               t.CRITICAL, '■')
+                               t.CRITICAL, 'mark_critical')
             return
         thresholds.apply_to(cfg, dict(thresholds.RECOMMENDED))
         self._rebuild_wording()
         self.console.publish_settings(thresholds.effective(cfg))
         self.reload()
-        self.console.toast('Recommended defaults restored', t.OK, '✓')
+        self.console.toast('Recommended defaults restored', t.OK, 'check')
 
     # ------------------------------------------------------------------
     # Console hooks

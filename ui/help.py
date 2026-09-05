@@ -16,9 +16,10 @@ value stays exactly where it was.
 
 import textwrap
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtCore import QRectF, QSize, Qt
+from PyQt5.QtGui import QPainter
+from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QPushButton, QVBoxLayout,
+                             QWidget)
 
 from ui import theme as t
 
@@ -76,33 +77,46 @@ def set_tip(widget, text):
 
 
 # ===========================================================================
-class InfoDot(QLabel):
-    """A small ⓘ beside a heading that reveals the full explanation on hover.
+class InfoDot(QWidget):
+    """A small information mark beside a heading that explains it on hover.
+
+    Painted rather than typed: the circled-i character is missing from the
+    default UI font on every platform this runs on, so Qt was substituting a
+    different font for it and the dot came out a different size next to every
+    heading.
 
     Clicking it shows the same text, so the explanation is still reachable on a
     touch screen or for anyone who never discovers hovering.
     """
 
     def __init__(self, tooltip, size=13):
-        super().__init__('ⓘ')
+        super().__init__()
+        from ui import icons
+        self._icons = icons
         self._size = size
+        self._color = t.TEXT_MUTED
         self.setToolTip(tooltip)
         self.setCursor(Qt.WhatsThisCursor)
-        self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(size + 5, size + 5)
-        self._paint(t.TEXT_MUTED)
+        self.setFixedSize(size + 4, size + 4)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # Named for a screen reader, which cannot see the mark at all.
+        self.setAccessibleName('More information')
+        self.setAccessibleDescription(tooltip)
 
-    def _paint(self, color):
-        self.setStyleSheet('color: %s; background: transparent; border: none; '
-                           'font-family: %s; font-size: %dpx;'
-                           % (color, t.FONT, self._size))
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        self._icons.paint(painter, 'info', QRectF(self.rect()), self._color,
+                          width=1.5)
+        painter.end()
 
     def enterEvent(self, event):
-        self._paint(t.ACCENT)
+        self._color = t.ACCENT
+        self.update()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self._paint(t.TEXT_MUTED)
+        self._color = t.TEXT_MUTED
+        self.update()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
@@ -124,8 +138,9 @@ class InlineNote(QFrame):
     page they have never opened before should not require them to hover.
     """
 
-    def __init__(self, text, color=None, glyph='ⓘ'):
+    def __init__(self, text, color=None, mark='info'):
         super().__init__()
+        from ui import icons
         color = color or t.ACCENT
         self.setObjectName('note')
         self.setStyleSheet(
@@ -135,8 +150,10 @@ class InlineNote(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(11, 8, 12, 8)
         row.setSpacing(9)
-        row.addWidget(t.label(glyph, size=12, color=color), alignment=Qt.AlignTop)
-        self.textLabel = t.label(text, size=11, color=t.TEXT_DIM)
+        row.addWidget(icons.Icon(mark if mark in icons.ICONS else 'info', 14,
+                                 color, width=1.5),
+                      alignment=Qt.AlignTop)
+        self.textLabel = t.label(text, size=t.SIZE_XS, color=t.TEXT_DIM)
         self.textLabel.setWordWrap(True)
         row.addWidget(self.textLabel, stretch=1)
 
@@ -157,8 +174,11 @@ class HelpNote(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        from ui import icons
+        self._icons = icons
         self._label = label
         self.button = QPushButton('')
+        self.button.setIconSize(QSize(13, 13))
         self.button.setCursor(Qt.PointingHandCursor)
         self.button.setStyleSheet(t.ghost_button_style(t.ACCENT))
         self.button.clicked.connect(self.toggle)
@@ -178,7 +198,12 @@ class HelpNote(QWidget):
     def toggle(self):
         self._expanded = not self._expanded
         self.body.setVisible(self._expanded)
-        self.button.setText(('▾  %s' if self._expanded else '▸  %s') % self._label)
+        self.button.setText(self._label)
+        self.button.setIcon(self._icons.icon(
+            'chevron_down' if self._expanded else 'chevron_right', 13, t.ACCENT))
+        # State, not just decoration: a screen reader needs to hear it too.
+        self.button.setAccessibleDescription(
+            'Expanded' if self._expanded else 'Collapsed')
 
     def set_text(self, text):
         self.body.set_text(text)
