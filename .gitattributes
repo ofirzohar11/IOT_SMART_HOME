@@ -1,0 +1,30 @@
+# Line endings are part of whether a launcher runs at all.
+#
+# cmd.exe is a CRLF parser: it seeks through a .bat file by byte offset to
+# resolve `goto`, so a batch file checked out with bare LF can jump to the
+# wrong place or fall off the end. These files were authored on macOS, so
+# without the rules below every clone on Windows got LF and the launchers
+# were unreliable. Shell scripts have the opposite requirement - a CR at the
+# end of the shebang makes the kernel look for an interpreter that does not
+# exist - so they are pinned the other way.
+
+* text=auto
+
+# Windows launchers: must be CRLF on disk.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Unix launchers and source: must be LF on disk.
+*.sh       text eol=lf
+*.command  text eol=lf
+*.py       text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf
+*.json     text eol=lf
+
+# Never touched.
+*.ttf   binary
+*.otf   binary
+*.db    binary
+*.docx  binary
+*.png   binary

@@ -19,7 +19,11 @@ Check your Python:
 python3 --version
 ```
 
-On Windows, use `python` instead of `python3` in every command on this page.
+On Windows, use `py -3` instead of `python3` in every command on this page.
+`py` is the launcher that every python.org installer puts on PATH. Plain
+`python` is on PATH only if you ticked **Add python.exe to PATH** during the
+install; when you did not, Windows answers that name with a Microsoft Store
+stub that exits without running anything.
 
 ---
 
@@ -56,10 +60,14 @@ Verify:
 
 ### Windows
 
+You can skip this section. `run\windows\start_panel.bat` finds Python, offers to
+build `.venv` and installs both packages the first time you run it. To do it by
+hand anyway:
+
 ```
 cd path\to\ColdChainMonitor
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+py -3 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 Verify:
@@ -135,6 +143,16 @@ run\windows\start_all.bat
 ```
 
 Each component opens in its own console window; close them to stop.
+
+> **First time only.** If the dependencies are not installed yet, the launcher
+> says so and offers to install them:
+>
+> ```
+> Install them into .venv now? [Y/n]
+> ```
+>
+> Press Return. It builds `.venv` and installs both packages, then starts the
+> system. Later runs skip straight to the launch.
 
 ### Using a different interpreter
 
@@ -456,6 +474,33 @@ chmod +x run/macos/*.command run/macos/*.sh
 
 Gatekeeper blocks scripts that arrived from the internet. Right-click the file
 in Finder → **Open** → **Open**. You only have to confirm once.
+
+### Windows: `ERROR: Python 3 was not found on this computer.`
+
+The launcher tried the `py` launcher, `python` and `python3` and none of them
+were a working interpreter. Install Python from
+[python.org](https://www.python.org/downloads/windows/) and tick
+**Add python.exe to PATH** on the first screen, then run the launcher again.
+
+If Python *is* installed and you still see this, open a command prompt and check
+what the names actually resolve to:
+
+```
+py -3 --version
+python --version
+```
+
+A `python` that prints nothing, or opens the Microsoft Store, is the App
+Execution Alias rather than a real interpreter. Turn it off under
+**Settings → Apps → Advanced app settings → App execution aliases**, or just
+use `py -3`, which the launcher prefers anyway.
+
+### Windows: the launcher window flashes and disappears
+
+The `.bat` files must have Windows (CRLF) line endings; `cmd.exe` seeks through
+them by byte offset, so a copy saved with Unix endings can jump to the wrong
+place. `.gitattributes` pins them, so a normal `git clone` is correct. If you
+edited one in an editor set to LF, save it again as CRLF.
 
 ### `ModuleNotFoundError: No module named 'PyQt5'`
 

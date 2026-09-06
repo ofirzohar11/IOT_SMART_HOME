@@ -697,7 +697,7 @@ def load():
     if not os.path.exists(SETTINGS_FILE):
         return {}
     try:
-        with open(SETTINGS_FILE, 'r') as handle:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as handle:
             data = json.load(handle)
     except (IOError, OSError, ValueError) as error:
         print('settings | ignoring unreadable %s (%s)' % (SETTINGS_FILE, error))
@@ -737,10 +737,14 @@ def save(values):
     directory = os.path.dirname(SETTINGS_FILE)
     handle, temporary = tempfile.mkstemp(dir=directory, suffix='.tmp')
     try:
-        with os.fdopen(handle, 'w') as stream:
+        with os.fdopen(handle, 'w', encoding='utf-8') as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)
             stream.write('\n')
-        os.rename(temporary, SETTINGS_FILE)
+        # os.replace, not os.rename: the two behave the same on POSIX, but on
+        # Windows rename refuses to overwrite and raises WinError 183, so the
+        # first save here would succeed and every save after it would fail.
+        # replace overwrites atomically on both.
+        os.replace(temporary, SETTINGS_FILE)
     except Exception:
         if os.path.exists(temporary):
             os.remove(temporary)
