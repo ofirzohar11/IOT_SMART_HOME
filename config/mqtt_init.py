@@ -14,7 +14,6 @@ import sys
 # 0 - HIT college broker (requires the college network / VPN)
 # 1 - public HiveMQ broker (works from anywhere, used for the demo)
 BROKER_INDEX = 1
-
 _BROKER_HOSTS = ['vmm1.saaintertrade.com', 'broker.hivemq.com']
 _BROKER_PORTS = [80, 1883]
 _USERNAMES = ['MATZI', '']
