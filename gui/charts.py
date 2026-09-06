@@ -29,6 +29,29 @@ from ui import theme as t
 
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
+# A QFont built in code takes QFont's own 0-99 weight scale, *not* the 100-900
+# CSS numbers the stylesheets use (Qt divides those by 8 on the way in). Naming
+# them here keeps a chart from accidentally asking for a weight eight times
+# heavier than the same text set in a stylesheet elsewhere.
+REGULAR = QFont.Normal      # 50
+MEDIUM = QFont.Medium       # 57
+SEMIBOLD = QFont.DemiBold   # 63
+HEAVY = QFont.Bold          # 75
+
+
+def font(size, weight=REGULAR, mono=False):
+    """A painter font on the same pixel scale as every stylesheet in the app.
+
+    Charts used to build their type with QFont(family, 9, QFont.Bold) - a
+    *point* size, which resolves against screen DPI and therefore did not match
+    the pixel sizes the rest of the console is set in. A gauge label and a card
+    label nominally both '9' came out different sizes on the same screen.
+    """
+    item = QFont(t.FONT_MONO if mono else t.FONT)
+    item.setPixelSize(size)
+    item.setWeight(weight)
+    return item
+
 
 def _parse(ts):
     try:
@@ -110,14 +133,14 @@ class ArcGauge(QFrame):
     def status(self):
         """(word, colour, canonical state) - the same six used console-wide."""
         if self.value is None:
-            return 'NO DATA', t.OFFLINE_FG, stat.OFFLINE
+            return 'No data', t.OFFLINE_FG, stat.OFFLINE
         if self.stale:
-            return 'NOT REPORTING', t.OFFLINE_FG, stat.OFFLINE
+            return 'Not reporting', t.OFFLINE_FG, stat.OFFLINE
         if self.value < self.alarm_min or self.value > self.alarm_max:
-            return 'CRITICAL', t.CRITICAL, stat.CRITICAL
+            return stat.label(stat.CRITICAL), t.CRITICAL, stat.CRITICAL
         if self.value < self.target_min or self.value > self.target_max:
-            return 'WARNING', t.WARN, stat.WARNING
-        return 'NORMAL', t.OK, stat.NORMAL
+            return stat.label(stat.WARNING), t.WARN, stat.WARNING
+        return stat.label(stat.NORMAL), t.OK, stat.NORMAL
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -137,13 +160,17 @@ class ArcGauge(QFrame):
         cy = title_h + radius + arc_w // 2
         box = QRect(cx - radius, cy - radius, radius * 2, radius * 2)
 
-        painter.setPen(QPen(QColor('#0B1120'), arc_w, Qt.SolidLine, Qt.RoundCap))
+        # The empty part of the dial. Lifted off the card rather than punched
+        # into it: at near-black the unfilled arc read as a hole, and the
+        # reading appeared to float in front of nothing.
+        painter.setPen(QPen(QColor(t.mix(t.BG, t.PANEL_ALT, 0.55)), arc_w,
+                            Qt.SolidLine, Qt.RoundCap))
         painter.drawArc(box, self.START * 16, self.SPAN * 16)
 
         band_start = self._angle(self.target_min)
         band_span = self._angle(self.target_max) - band_start
         band = QColor(t.OK)
-        band.setAlpha(80)
+        band.setAlpha(58)
         painter.setPen(QPen(band, arc_w, Qt.SolidLine, Qt.FlatCap))
         painter.drawArc(box, int(band_start * 16), int(band_span * 16))
 
@@ -154,17 +181,31 @@ class ArcGauge(QFrame):
             painter.setPen(QPen(QColor(status_color), arc_w, Qt.SolidLine, Qt.RoundCap))
             painter.drawArc(box, self.START * 16, int(span * 16))
 
-        painter.setPen(QColor(t.TEXT_DIM))
-        painter.setFont(QFont(t.FONT, 9, QFont.Bold))
-        painter.drawText(QRect(0, 9, w, 18), Qt.AlignCenter, self.title.upper())
+        painter.setPen(QColor(t.TEXT_MUTED))
+        painter.setFont(font(t.SIZE_XS, MEDIUM))
+        painter.drawText(QRect(0, 10, w, 18), Qt.AlignCenter, self.title)
 
+        # The reading itself, in the tabular face. Set proportionally it shifted
+        # left and right by a pixel or two every time a 1 replaced a 0, which on
+        # a gauge that updates every second reads as a twitch.
+        # The reading is neutral while it is fine and takes the status colour
+        # only once it is not. Colouring it green as well as the arc, the band
+        # and the word beneath it made a healthy gauge four kinds of green and
+        # left nothing louder to escalate to.
         text = '--' if self.value is None else ('%.1f%s' % (self.value, self.unit))
-        painter.setPen(QColor(status_color if self.value is not None else t.TEXT_DIM))
-        painter.setFont(QFont(t.FONT, 26 if self.compact else 30, QFont.Bold))
+        if self.value is None:
+            value_color = t.TEXT_DIM
+        elif state in (stat.WARNING, stat.CRITICAL):
+            value_color = status_color
+        else:
+            value_color = t.TEXT
+        painter.setPen(QColor(value_color))
+        painter.setFont(font(t.SIZE_XXL if self.compact else t.SIZE_DISPLAY,
+                             MEDIUM, mono=True))
         painter.drawText(QRect(cx - 116, cy - 32, 232, 46), Qt.AlignCenter, text)
 
         # The state in a word and a mark, not only in the colour of the arc.
-        painter.setFont(QFont(t.FONT, 8, QFont.Bold))
+        painter.setFont(font(t.SIZE_XS, SEMIBOLD))
         metrics = painter.fontMetrics()
         label_w = metrics.width(status_text)
         mark_size = 9
@@ -181,7 +222,7 @@ class ArcGauge(QFrame):
         # The ends of the scale, each carrying the unit so the number on the
         # dial can be judged without hunting for what it is measured in.
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION))
         unit = self.unit.strip()
         for value in (self.vmin, self.vmax):
             deg = math.radians(self._angle(value))
@@ -195,7 +236,7 @@ class ArcGauge(QFrame):
 
         # The band the reading is judged against, said in words underneath.
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION))
         painter.drawText(QRect(0, h - 17, w, 14), Qt.AlignCenter,
                          'Normal %g to %g %s' % (self.target_min,
                                                  self.target_max, unit))
@@ -308,10 +349,10 @@ class TimeSeriesChart(QFrame):
         painter.drawRoundedRect(QRect(0, 0, w - 1, h - 1), t.RADIUS_LG, t.RADIUS_LG)
 
         if self.title:
-            painter.setPen(QColor(t.TEXT_DIM))
-            painter.setFont(QFont(t.FONT, 9, QFont.Bold))
+            painter.setPen(QColor(t.TEXT))
+            painter.setFont(font(t.SIZE_SM, SEMIBOLD))
             painter.drawText(QRect(16, 11, w - 32, 16), Qt.AlignLeft,
-                             self.title.upper())
+                             self.title)
             self._paint_legend(painter, w)
 
         rect = self._plot_rect()
@@ -338,7 +379,7 @@ class TimeSeriesChart(QFrame):
 
     def _paint_legend(self, painter, w):
         """A key for every trace, and for the shaded band behind them."""
-        painter.setFont(QFont(t.FONT, 8, QFont.Bold))
+        painter.setFont(font(t.SIZE_CAPTION, MEDIUM))
         x = w - 16
         entries = [(trace.label, trace.color, 'line') for trace in self.traces]
         for band in self.bands:
@@ -380,7 +421,7 @@ class TimeSeriesChart(QFrame):
         is what used to make the humidity chart print 100 / 85 / 70 on top of
         one another; the line is still drawn, only its label is dropped.
         """
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION, mono=True))
         values = [self.vmin, self.vmax]
         values += [th.value for th in self.thresholds]
         for band in self.bands:
@@ -456,7 +497,7 @@ class TimeSeriesChart(QFrame):
         inside the plot.
         """
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION, mono=True))
         count = len(self.rows)
         ticks = max(2, min(7, int(rect.width() // 110)))
         span_days = self._span_days()
@@ -503,7 +544,7 @@ class TimeSeriesChart(QFrame):
 
     def _paint_message(self, painter, rect, text):
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 10))
+        painter.setFont(font(t.SIZE_SM))
         painter.drawText(rect, Qt.AlignCenter, text)
 
 
@@ -538,11 +579,11 @@ class StateTimeline(QFrame):
         painter.setBrush(QColor(t.PANEL))
         painter.drawRoundedRect(QRect(0, 0, w - 1, h - 1), t.RADIUS_LG, t.RADIUS_LG)
 
-        painter.setPen(QColor(t.TEXT_DIM))
-        painter.setFont(QFont(t.FONT, 9, QFont.Bold))
-        painter.drawText(QRect(16, 10, w - 32, 16), Qt.AlignLeft, 'ACTIVITY')
+        painter.setPen(QColor(t.TEXT))
+        painter.setFont(font(t.SIZE_SM, SEMIBOLD))
+        painter.drawText(QRect(16, 10, w - 32, 16), Qt.AlignLeft, 'Activity')
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION))
         painter.drawText(QRect(16, 10, w - 32, 16), Qt.AlignRight,
                          'darker = more of that period spent on')
 
@@ -552,7 +593,7 @@ class StateTimeline(QFrame):
 
         if self._loading or not self.rows:
             painter.setPen(QColor(t.TEXT_MUTED))
-            painter.setFont(QFont(t.FONT, 10))
+            painter.setFont(font(t.SIZE_SM))
             painter.drawText(QRect(left, top, right - left, h - top - 12),
                              Qt.AlignCenter,
                              'Loading…' if self._loading
@@ -565,7 +606,7 @@ class StateTimeline(QFrame):
         for lane, (field, text, color) in enumerate(self.rows_spec):
             y = top + lane * (lane_h + gap)
             painter.setPen(QColor(t.TEXT_MUTED))
-            painter.setFont(QFont(t.FONT, 9))
+            painter.setFont(font(t.SIZE_XS))
             painter.drawText(QRect(12, y, 74, lane_h),
                              Qt.AlignLeft | Qt.AlignVCenter, text)
 
@@ -590,7 +631,7 @@ class StateTimeline(QFrame):
 
     def _paint_time_axis(self, painter, left, right, top):
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION, mono=True))
         count = len(self.rows)
         ticks = max(2, min(6, int((right - left) // 120)))
         first = _parse(self.rows[0].get('bucket_ts'))
@@ -654,7 +695,7 @@ class Sparkline(QFrame):
 
         if len(self.values) < 2:
             painter.setPen(QColor(t.TEXT_MUTED))
-            painter.setFont(QFont(t.FONT, 8))
+            painter.setFont(font(t.SIZE_CAPTION))
             painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter,
                              'collecting history…')
             painter.end()
@@ -679,7 +720,7 @@ class Sparkline(QFrame):
         painter.drawPolyline(points)
 
         painter.setPen(QColor(t.TEXT_MUTED))
-        painter.setFont(QFont(t.FONT, 8))
+        painter.setFont(font(t.SIZE_CAPTION, mono=True))
         caption = ('flat at %g' % round(low, 2) if high - low < 1e-9
                    else '%g–%g' % (round(low, 2), round(high, 2)))
         painter.drawText(QRectF(w - 58, 0, 54, h),

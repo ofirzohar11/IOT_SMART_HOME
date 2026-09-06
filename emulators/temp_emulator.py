@@ -97,21 +97,26 @@ class TempSensorPanel(EmulatorPanel):
         self.tempValue.setAlignment(Qt.AlignCenter)
         self.humValue = QLabel('--')
         self.humValue.setAlignment(Qt.AlignCenter)
-        self._style_value(self.tempValue, ui.ACCENT)
+        # Neither reading is 'interactive', so neither is painted in the
+        # accent. They are numbers; they get ink.
+        self._style_value(self.tempValue, ui.TEXT)
         self._style_value(self.humValue, ui.TEXT)
 
-        grid.addWidget(ui.label('Temperature', size=11, color=ui.TEXT_DIM,
+        grid.addWidget(ui.label('Temperature', size=ui.SIZE_XS,
+                                color=ui.TEXT_MUTED,
                                 align=Qt.AlignCenter), 0, 0)
-        grid.addWidget(ui.label('Humidity', size=11, color=ui.TEXT_DIM,
+        grid.addWidget(ui.label('Humidity', size=ui.SIZE_XS,
+                                color=ui.TEXT_MUTED,
                                 align=Qt.AlignCenter), 0, 1)
         grid.addWidget(self.tempValue, 1, 0)
         grid.addWidget(self.humValue, 1, 1)
 
-        self.modelLabel = ui.label('waiting for first sample', size=11,
-                                   color=ui.TEXT_DIM, align=Qt.AlignCenter)
+        self.modelLabel = ui.label('waiting for first sample',
+                                   size=ui.SIZE_XS,
+                                   color=ui.TEXT_MUTED, align=Qt.AlignCenter)
         grid.addWidget(self.modelLabel, 2, 0, 1, 2)
 
-        self.truthLabel = ui.label('', size=10, color=ui.WARN,
+        self.truthLabel = ui.label('', size=ui.SIZE_XS, color=ui.WARN,
                                    align=Qt.AlignCenter)
         self.truthLabel.hide()
         grid.addWidget(self.truthLabel, 3, 0, 1, 2)
@@ -120,9 +125,7 @@ class TempSensorPanel(EmulatorPanel):
 
     @staticmethod
     def _style_value(widget, color):
-        widget.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 26px; font-weight: bold; '
-            'background: transparent; border: none;' % (color, ui.FONT))
+        widget.setStyleSheet(ui.reading_style(color, size=ui.SIZE_XXL))
 
     # -- MQTT --------------------------------------------------------------
     def on_mqtt_message(self, topic, payload):

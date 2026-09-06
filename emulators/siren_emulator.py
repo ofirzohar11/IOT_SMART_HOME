@@ -10,6 +10,7 @@ from ui.qt_env import ensure_qt_plugin_path
 ensure_qt_plugin_path()
 
 from emulators.relay_base import run_relay
+from ui import theme as t
 
 if __name__ == '__main__':
-    run_relay('siren', '#EF4444', (760, 700, 330, 250))
+    run_relay('siren', t.ALARM, (760, 700, 330, 250))

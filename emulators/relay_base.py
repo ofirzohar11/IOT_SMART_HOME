@@ -42,12 +42,13 @@ class RelayPanel(EmulatorPanel):
         self.stateLabel = QLabel()
         self.stateLabel.setAlignment(Qt.AlignCenter)
         self._paint_state()
-        self.lastCmdLabel = ui.label('waiting for first command...', size=11,
-                                     color=ui.TEXT_DIM, align=Qt.AlignCenter)
+        self.lastCmdLabel = ui.label('waiting for first command…',
+                                     size=ui.SIZE_XS, color=ui.TEXT_MUTED,
+                                     align=Qt.AlignCenter)
 
         counters = QHBoxLayout()
-        self.switchCountLabel = ui.label('switch cycles: 0', size=11,
-                                         color=ui.TEXT_DIM)
+        self.switchCountLabel = ui.label('switch cycles: 0', size=ui.SIZE_XS,
+                                         color=ui.TEXT_MUTED)
         counters.addWidget(self.switchCountLabel)
         counters.addStretch()
 
@@ -61,14 +62,9 @@ class RelayPanel(EmulatorPanel):
 
     def _paint_state(self):
         is_on = self.state == 'ON'
-        color = self.on_color if is_on else ui.OFF
-        self.stateLabel.setText(self.name.upper() + ':  ' + self.state)
-        self.stateLabel.setStyleSheet(
-            'color: %s; background-color: %s; border: 2px solid %s; '
-            'border-radius: 10px; font-family: %s; font-size: 19px; '
-            'font-weight: bold; padding: 15px 8px;'
-            % ('#0B1220' if is_on else ui.TEXT_DIM,
-               color if is_on else 'transparent', color, ui.FONT))
+        color = self.on_color if is_on else ui.OFFLINE_FG
+        self.stateLabel.setText('%s:  %s' % (self.name, self.state.title()))
+        self.stateLabel.setStyleSheet(ui.state_plate_style(color, loud=is_on))
 
     def on_connected(self):
         # Report the current state so a manager that started later is in sync.

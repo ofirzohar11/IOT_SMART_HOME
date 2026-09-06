@@ -71,9 +71,7 @@ class TempProbeBPanel(EmulatorPanel):
         self.timer.start(cfg.SENSOR_PUBLISH_MS)
 
     def _style_value(self, color):
-        self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 28px; font-weight: bold; '
-            'background: transparent; border: none;' % (color, ui.FONT))
+        self.valueLabel.setStyleSheet(ui.reading_style(color))
 
     def on_fault_changed(self, fault_id, active):
         if fault_id == 'probe_drift' and not active:

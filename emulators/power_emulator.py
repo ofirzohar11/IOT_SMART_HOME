@@ -48,16 +48,19 @@ class PowerSensorPanel(EmulatorPanel):
         self.sourceLabel.setAlignment(Qt.AlignCenter)
         self.batteryBar = QProgressBar()
         self.batteryBar.setRange(0, 100)
-        self.batteryBar.setFixedHeight(22)
         self.toggleBtn = QPushButton()
-        self.toggleBtn.setFixedHeight(38)
+        self.toggleBtn.setFixedHeight(ui.CONTROL_HEIGHT + 4)
         self.toggleBtn.clicked.connect(self.toggle)
 
         row = QHBoxLayout()
-        row.addWidget(ui.label('Backup battery', size=11, color=ui.TEXT_DIM))
+        row.setSpacing(ui.SPACE_SM)
+        row.addWidget(ui.label('Backup battery', size=ui.SIZE_XS,
+                               color=ui.TEXT_MUTED))
         row.addStretch()
-        self.batteryNote = ui.label('', size=11, color=ui.TEXT_DIM)
+        self.batteryNote = ui.label('', size=ui.SIZE_XS, color=ui.TEXT_MUTED)
         row.addWidget(self.batteryNote)
+        self.batteryPercent = ui.label('--', size=ui.SIZE_XS, mono=True)
+        row.addWidget(self.batteryPercent)
 
         layout.addWidget(self.sourceLabel)
         layout.addLayout(row)
@@ -119,24 +122,39 @@ class PowerSensorPanel(EmulatorPanel):
     def _paint(self):
         on_mains = self.source == 'MAINS'
         color = ui.OK if on_mains else ui.WARN
-        self.sourceLabel.setText('POWER: ' + self.source)
+        self.sourceLabel.setText('Power: ' + self.source.title())
         self.sourceLabel.setStyleSheet(
-            'color: %s; background: transparent; border: 2px solid %s; '
-            'border-radius: 10px; font-family: %s; font-size: 18px; '
-            'font-weight: bold; padding: 11px;' % (color, color, ui.FONT))
-        self.toggleBtn.setText('RESTORE MAINS' if not on_mains else 'SIMULATE POWER CUT')
-        self.toggleBtn.setStyleSheet(ui.button_style(ui.OK if not on_mains else ui.WARN))
+            ui.state_plate_style(color, loud=not on_mains))
+        # Cutting the mains arms a fault, so that direction is the destructive
+        # one and is drawn as such. Restoring it is ordinary.
+        if on_mains:
+            self.toggleBtn.setText('Simulate power cut')
+            self.toggleBtn.setStyleSheet(ui.outline_button_style(ui.WARN))
+        else:
+            self.toggleBtn.setText('Restore mains')
+            self.toggleBtn.setStyleSheet(ui.outline_button_style(ui.ACCENT))
 
         bar_color = ui.ALARM if self.battery <= cfg.BATTERY_ALARM_PERCENT else (
             ui.WARN if self.battery <= 50 else ui.OK)
+        # The figure reads beside the bar, not on top of it. Printed inside,
+        # it sat on the filled chunk at a full charge and on the empty track at
+        # a flat one, so no single ink colour was legible in both - and at 20 %
+        # the number was half on one and half on the other.
         self.batteryBar.setValue(int(self.battery))
-        self.batteryBar.setFormat('%.0f %%' % self.battery)
+        self.batteryBar.setTextVisible(False)
+        self.batteryBar.setFixedHeight(8)
         self.batteryBar.setStyleSheet('''
             QProgressBar { background-color: %s; border: 1px solid %s;
-                border-radius: 6px; color: %s; font-family: %s; font-size: 11px;
-                font-weight: bold; text-align: center; }
-            QProgressBar::chunk { background-color: %s; border-radius: 5px; }
-        ''' % (ui.BG, ui.BORDER, ui.TEXT, ui.FONT, bar_color))
+                border-radius: %dpx; }
+            QProgressBar::chunk { background-color: %s; border-radius: %dpx; }
+        ''' % (ui.BG, ui.BORDER, ui.RADIUS_SM - 3, bar_color,
+               ui.RADIUS_SM - 3))
+        self.batteryPercent.setText('%.0f %%' % self.battery)
+        self.batteryPercent.setStyleSheet(
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (bar_color if self.battery <= 50 else ui.TEXT, ui.FONT_MONO,
+               ui.SIZE_XS, ui.W_MEDIUM))
         self.batteryNote.setText('draining' if not on_mains else 'charging')
 
 

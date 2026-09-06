@@ -18,6 +18,23 @@ from ui import status as stat
 from ui import theme as t
 
 
+def sentence(text):
+    """Capitalise the first letter and leave the rest of the words alone.
+
+    Labels reach these widgets in whatever case the page wrote them - 'still
+    open', 'Last opened by', 'MINUTES OUT OF RANGE'. They used to be forced to
+    upper case on the way in, which hid the inconsistency by flattening it.
+    Now that they are shown as written, this normalises the first character
+    without touching a unit, an acronym or a proper noun further along.
+    """
+    text = str(text)
+    if not text:
+        return text
+    if text.isupper() and len(text.split()) > 1:
+        text = text.capitalize()
+    return text[0].upper() + text[1:]
+
+
 def discard(widget):
     """Remove a widget from its parent *now*, then schedule its deletion.
 
@@ -87,7 +104,12 @@ class Card(QFrame):
                 headingRow.addWidget(
                     icons.Icon(icon, 15, icon_color or t.TEXT_DIM, width=1.6),
                     alignment=Qt.AlignVCenter)
-            headingRow.addWidget(t.caption(title))
+            # Sentence case, full-strength ink. Every heading in the console
+            # used to be set in spaced capitals at 10px in a dimmed grey, which
+            # is a caption treatment: it gave the *name* of each card less
+            # presence than the prose inside it and made six screens of cards
+            # read as a form rather than as a product.
+            headingRow.addWidget(t.title(title))
             if help is not None:
                 headingRow.addWidget(help.dot(size=12) if hasattr(help, 'dot')
                                      else h.InfoDot(help, size=12))
@@ -97,7 +119,7 @@ class Card(QFrame):
                 # size hint, which squeezes the whole heading into a column.
                 # Fixed height, or a card with a short body hands its slack to
                 # the subtitle and leaves it floating in mid-air.
-                note = t.label(subtitle, size=11, color=t.TEXT_MUTED)
+                note = t.label(subtitle, size=t.SIZE_XS, color=t.TEXT_MUTED)
                 note.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
                 titles.addWidget(note)
             self.headerRow.addLayout(titles)
@@ -127,11 +149,11 @@ class SectionTitle(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 4, 2, 0)
         row.setSpacing(7)
-        row.addWidget(t.caption(text))
+        row.addWidget(t.title(text))
         if help is not None:
             row.addWidget(help.dot(size=12) if hasattr(help, 'dot')
                           else h.InfoDot(help, size=12))
-        self.noteLabel = t.label(note or '', size=11, color=t.TEXT_MUTED)
+        self.noteLabel = t.label(note or '', size=t.SIZE_XS, color=t.TEXT_MUTED)
         row.addWidget(self.noteLabel)
         row.addStretch()
 
@@ -175,35 +197,44 @@ class Pill(QFrame):
     # ``glyph`` is accepted under its old name so nothing that still passes a
     # character positionally breaks; a one-character value is simply ignored
     # now that the mark is painted.
-    def set(self, text, color, mark=None):
+    def set(self, text, color, mark=None, filled=None):
         self._color = color
+        if filled is not None:
+            self._filled = filled
         if mark and mark in icons.ICONS:
             self.markIcon.set_name(mark)
             self.markIcon.show()
         elif mark is None:
             self.markIcon.hide()
-        self.markIcon.set_color('#08111F' if self._filled else color)
+        self.markIcon.set_color(t.ON_ACCENT if self._filled else color)
         self.textLabel.setText(str(text))
-        text_color = '#08111F' if self._filled else color
+        text_color = t.ON_ACCENT if self._filled else color
         self.textLabel.setStyleSheet(
             'color: %s; background: transparent; border: none; '
-            'font-family: %s; font-size: %dpx; font-weight: %s; '
-            'letter-spacing: 0.3px;'
-            % (text_color, t.FONT, self._size, '700' if self._filled else '600'))
+            'font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'letter-spacing: 0.2px;'
+            % (text_color, t.FONT, self._size,
+               t.W_SEMIBOLD if self._filled else t.W_MEDIUM))
         if self._filled:
             self.setStyleSheet('QFrame#pill { background-color: %s; '
                                'border: 1px solid %s; border-radius: %dpx; }'
                                % (color, color, t.RADIUS_SM))
         else:
-            self.setStyleSheet('QFrame#pill { background: transparent; '
+            # A faint field of the same colour rather than a bare outline. An
+            # outline-only chip on a dark card reads as an empty input box; the
+            # wash makes it a chip, and keeps the border from being the only
+            # thing carrying the status.
+            self.setStyleSheet('QFrame#pill { background-color: %s; '
                                'border: 1px solid %s; border-radius: %dpx; }'
-                               % (color, t.RADIUS_SM))
+                               % (t.wash(color, 0.12, t.PANEL),
+                                  t.mix(color, t.PANEL, 0.42), t.RADIUS_SM))
 
     def set_state(self, state, text=None, note=''):
         """Show one of the six canonical states, with its standard wording."""
         entry = stat.get(state)
-        self.set(text if text is not None else entry.label.upper(),
-                 entry.color, entry.mark)
+        self.set(text if text is not None else entry.label,
+                 entry.color, entry.mark, filled=state in (stat.WARNING,
+                                                           stat.CRITICAL))
         self.setToolTip(stat.tooltip(state, extra=note))
         return self
 
@@ -211,25 +242,41 @@ class Pill(QFrame):
 class StatusChip(Pill):
     """A Pill that only ever shows one of the six canonical states."""
 
-    def __init__(self, state=stat.NORMAL, filled=False, size=11, text=None):
+    def __init__(self, state=stat.NORMAL, filled=None, size=11, text=None):
+        if filled is None:
+            filled = state in (stat.WARNING, stat.CRITICAL)
         entry = stat.get(state)
-        super().__init__(text if text is not None else entry.label.upper(),
+        super().__init__(text if text is not None else entry.label,
                          entry.color, filled, entry.mark, size)
         self.setToolTip(stat.tooltip(state))
+
+
+# The two states worth interrupting somebody for. Everything else is reported
+# in a chip that does not compete with them: a history list where every routine
+# 'Normal' event is a solid block of bright green has spent all of its contrast
+# before the one amber row arrives, and that row is the only one that mattered.
+LOUD_STATES = (stat.WARNING, stat.CRITICAL)
+
+
+def _loud(state):
+    return state in LOUD_STATES
 
 
 class LevelPill(Pill):
     """An alert severity, resolved through the shared status vocabulary."""
 
-    def __init__(self, level=None, filled=True, size=11):
-        super().__init__('', t.OFF, filled, size=size)
+    def __init__(self, level=None, filled=None, size=11):
+        self._force_filled = filled
+        super().__init__('', t.OFF, bool(filled), size=size)
         if level:
             self.set_level(level)
 
     def set_level(self, level, text=None):
         state = stat.from_level(level)
         entry = stat.get(state)
-        self.set(text or entry.label.upper(), entry.color, entry.mark)
+        filled = self._force_filled
+        self.set(text or entry.label, entry.color, entry.mark,
+                 filled=_loud(state) if filled is None else filled)
         self.setToolTip(stat.tooltip(state, 'Severity: %s' % entry.label))
 
 
@@ -249,7 +296,7 @@ class HealthPill(Pill):
     def set_health(self, health):
         state = stat.from_health(health)
         entry = stat.get(state)
-        self.set(entry.label.upper(), entry.color, entry.mark)
+        self.set(entry.label, entry.color, entry.mark, filled=_loud(state))
         self.setToolTip(stat.tooltip(
             state, 'Device status: %s' % entry.label,
             extra=stat.HEALTH_TERMS.get(health, '')))
@@ -272,11 +319,16 @@ class StatTile(QFrame):
         self.setMinimumWidth(minimum_width)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(13, 10, 13, 10)
+        layout.setContentsMargins(14, 11, 14, 11)
         layout.setSpacing(3)
-        self.valueLabel = t.label('--', size=value_size, bold=True, mono=mono)
+        # Medium, not bold. A tabular face at 21px is already the loudest thing
+        # in a tile; setting it bold as well left a row of them shouting at each
+        # other and flattened the difference between a number and its label.
+        self.valueLabel = t.label('--', size=value_size, mono=mono,
+                                  weight=t.W_MEDIUM)
         self.valueLabel.setWordWrap(wrap)
-        self.captionLabel = t.caption(caption_text, color=t.TEXT_MUTED)
+        self.captionLabel = t.label(sentence(caption_text), size=t.SIZE_XS,
+                                    color=t.TEXT_MUTED, weight=t.W_MEDIUM)
         # Wrapped, not clipped: eight of these share one row on the History
         # page, and a caption like "MINUTES OUT OF RANGE" has no chance of
         # fitting on one line at the console's minimum window width.
@@ -291,12 +343,13 @@ class StatTile(QFrame):
     def set_value(self, text, color=t.TEXT):
         self.valueLabel.setText(str(text))
         self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: %dpx; font-weight: 600; '
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
             'background: transparent; border: none;'
-            % (color, t.FONT_MONO if self.mono else t.FONT, self.value_size))
+            % (color, t.FONT_MONO if self.mono else t.FONT, self.value_size,
+               t.W_MEDIUM))
 
     def set_caption(self, text):
-        self.captionLabel.setText(text.upper())
+        self.captionLabel.setText(sentence(text))
 
 
 class KeyValue(QWidget):
@@ -307,9 +360,10 @@ class KeyValue(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
-        keyLabel = t.label(key, size=11, color=t.TEXT_MUTED)
+        keyLabel = t.label(key, size=t.SIZE_XS, color=t.TEXT_MUTED)
         keyLabel.setFixedWidth(key_width)
-        self.valueLabel = t.label(value, size=12, color=value_color)
+        self.valueLabel = t.label(value, size=t.SIZE_SM, color=value_color,
+                                  weight=t.W_MEDIUM)
         self.valueLabel.setWordWrap(True)
         row.addWidget(keyLabel, alignment=Qt.AlignTop)
         row.addWidget(self.valueLabel, stretch=1)
@@ -317,8 +371,9 @@ class KeyValue(QWidget):
     def set_value(self, text, color=t.TEXT):
         self.valueLabel.setText(str(text))
         self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 12px; background: transparent; '
-            'border: none;' % (color, t.FONT))
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (color, t.FONT, t.SIZE_SM, t.W_MEDIUM))
 
 
 class EmptyState(QWidget):
@@ -410,8 +465,10 @@ class Toast(QFrame):
         self.setStyleSheet(
             'QFrame#toast { background-color: %s; border: 1px solid %s; '
             'border-left: 3px solid %s; border-radius: %dpx; }'
-            % (t.PANEL_ALT, t.BORDER_STRONG, color, t.RADIUS))
-        t.add_shadow(self, blur=30, alpha=150, dy=6)
+            % (t.PANEL_HOVER, t.BORDER_STRONG, color, t.RADIUS))
+        # Lifted off the page rather than outlined onto it: a toast that shares
+        # the card colour behind it reads as part of the layout.
+        t.add_shadow(self, blur=40, alpha=175, dy=10)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(13, 10, 15, 10)
@@ -504,7 +561,7 @@ class ConfirmDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(430)
-        self.setStyleSheet('QDialog { background-color: %s; }' % t.SURFACE)
+        self.setStyleSheet('QDialog { background-color: %s; }' % t.PANEL)
 
         accent = t.CRITICAL if danger else t.ACCENT
         layout = QVBoxLayout(self)
@@ -519,11 +576,11 @@ class ConfirmDialog(QDialog):
         headingText = QVBoxLayout()
         headingText.setSpacing(5)
         headingText.addWidget(t.label(title, size=t.SIZE_MD, bold=True))
-        body = t.label(message, size=12, color=t.TEXT_DIM)
+        body = t.label(message, size=t.SIZE_SM, color=t.TEXT_DIM)
         body.setWordWrap(True)
         headingText.addWidget(body)
         if detail:
-            note = t.label(detail, size=11, color=t.TEXT_MUTED)
+            note = t.label(detail, size=t.SIZE_XS, color=t.TEXT_MUTED)
             note.setWordWrap(True)
             headingText.addWidget(note)
         heading.addLayout(headingText, stretch=1)
@@ -562,9 +619,23 @@ class SegmentedControl(QWidget):
         self._buttons = {}
         self._value = current if current is not None else options[0][1]
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        # One recessed track with a raised segment inside it, rather than a row
+        # of separate outlined buttons. The old form gave every option its own
+        # border, so four ranges read as four unrelated controls and the
+        # selected one was distinguishable only by a slightly paler fill.
+        self.setStyleSheet('QWidget { background: transparent; }')
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        track = QFrame()
+        track.setObjectName('track')
+        track.setStyleSheet(
+            'QFrame#track { background-color: %s; border: 1px solid %s; '
+            'border-radius: %dpx; }' % (t.BG, t.BORDER, t.RADIUS_SM))
+        outer.addWidget(track)
+
+        row = QHBoxLayout(track)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
         for text, value in options:
             button = QPushButton(text)
             button.setCheckable(True)
@@ -592,15 +663,18 @@ class SegmentedControl(QWidget):
             button.setChecked(selected)
             button.setStyleSheet('''
                 QPushButton {
-                    background-color: %s; color: %s; border: 1px solid %s;
-                    border-radius: %dpx; font-family: %s; font-size: 11px;
-                    font-weight: 600; padding: 5px 12px;
+                    background-color: %s; color: %s; border: none;
+                    border-radius: %dpx; font-family: "%s"; font-size: %dpx;
+                    font-weight: %d; padding: 5px 12px;
                 }
-                QPushButton:hover { background-color: %s; }
-            ''' % (t.PANEL_ALT if selected else 'transparent',
+                QPushButton:hover { background-color: %s; color: %s; }
+                QPushButton:focus { border: 2px solid %s; outline: none; }
+            ''' % (t.PANEL_HOVER if selected else 'transparent',
                    t.TEXT if selected else t.TEXT_DIM,
-                   t.BORDER_STRONG if selected else t.BORDER,
-                   t.RADIUS_SM, t.FONT, t.PANEL_HOVER))
+                   t.RADIUS_SM - 2, t.FONT, t.SIZE_XS,
+                   t.W_SEMIBOLD if selected else t.W_MEDIUM,
+                   t.PANEL_HOVER if selected else t.PANEL_ALT, t.TEXT,
+                   t.FOCUS_RING))
 
 
 class ToggleRow(QFrame):
@@ -637,7 +711,7 @@ class ToggleRow(QFrame):
         titleRow.addWidget(self.titleLabel)
         titleRow.addStretch()
         text.addLayout(titleRow)
-        note = t.label(description, size=10, color=t.TEXT_MUTED)
+        note = t.label(description, size=t.SIZE_XS, color=t.TEXT_MUTED)
         note.setWordWrap(True)
         text.addWidget(note)
         h.set_help(self, title, description,

@@ -92,28 +92,29 @@ class HeroBanner(QFrame):
         # The verdict block: a drawn mark, then the word, then the colour.
         self.statusBlock = QFrame()
         self.statusBlock.setObjectName('verdict')
-        self.statusBlock.setFixedWidth(186)
-        self.statusBlock.setMinimumHeight(76)
+        self.statusBlock.setFixedWidth(168)
+        self.statusBlock.setMinimumHeight(66)
         self.statusBlock.setToolTip(STATUS_HELP)
         verdict = QHBoxLayout(self.statusBlock)
         verdict.setContentsMargins(12, 10, 12, 10)
         verdict.setSpacing(10)
         verdict.addStretch()
-        self.statusMark = icons.Icon('mark_offline', 22, '#08111F', width=2.0)
+        self.statusMark = icons.Icon('mark_offline', 20, t.OFFLINE_FG, width=2.0)
         self.statusLabel = QLabel('WAITING')
         self.statusLabel.setAlignment(Qt.AlignCenter)
         verdict.addWidget(self.statusMark, alignment=Qt.AlignVCenter)
         verdict.addWidget(self.statusLabel, alignment=Qt.AlignVCenter)
         verdict.addStretch()
-        self._paint_status(t.OFF, 'WAITING', 'mark_offline')
+        self._paint_status(t.OFF, 'WAITING', 'mark_offline', loud=False)
         row.addWidget(self.statusBlock)
 
         text = QVBoxLayout()
         text.setSpacing(3)
         self.headlineLabel = t.label('Connecting to the monitoring system…',
-                                     size=17, bold=True)
+                                     size=t.SIZE_LG, weight=t.W_BOLD,
+                                     spacing=-0.2)
         self.headlineLabel.setWordWrap(True)
-        self.detailLabel = t.label('', size=12, color=t.TEXT_DIM)
+        self.detailLabel = t.label('', size=t.SIZE_SM, color=t.TEXT_DIM)
         self.detailLabel.setWordWrap(True)
         text.addWidget(self.headlineLabel)
         text.addWidget(self.detailLabel)
@@ -152,7 +153,7 @@ class HeroBanner(QFrame):
                    'How many warnings are open right now.',
                    'A warning is the early notice that lets somebody fix a '
                    'problem before the stock is affected.', 'Zero.')
-        self.updatedLabel = t.label('', size=10, color=t.TEXT_MUTED,
+        self.updatedLabel = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED,
                                     align=Qt.AlignRight)
         h.set_help(self.updatedLabel, 'Last update',
                    'When this console last heard from the unit, and how long '
@@ -168,20 +169,39 @@ class HeroBanner(QFrame):
     def _paint(self, color):
         self.setStyleSheet(
             'QFrame#panel { background-color: %s; border: 1px solid %s; '
-            'border-left: 4px solid %s; border-radius: %dpx; }'
-            % (t.PANEL, t.BORDER, color, t.RADIUS_LG))
+            'border-left: 3px solid %s; border-radius: %dpx; }'
+            % (t.wash(color, 0.05, t.PANEL), t.mix(color, t.BORDER, 0.22),
+               color, t.RADIUS_LG))
 
-    def _paint_status(self, color, text, mark):
+    def _paint_status(self, color, text, mark, loud=True):
+        """The verdict block. It shouts only when there is something to shout about.
+
+        This used to be a solid 186x76 slab of the status colour in every state,
+        which meant a healthy unit put the brightest, most saturated object on
+        the entire screen directly in front of the operator and held it there
+        all day. A status system only works if calm is quiet: a good reading now
+        gets a tinted chip, and the solid fill is kept for the warning and the
+        alarm, where being impossible to ignore is the point.
+        """
         self.statusMark.set_name(mark)
-        self.statusMark.set_color('#08111F')
+        self.statusMark.set_color(t.ON_ACCENT if loud else color)
         self.statusLabel.setText(text)
         self.statusLabel.setStyleSheet(
-            'color: #08111F; background: transparent; border: none; '
-            'font-family: %s; font-size: %dpx; font-weight: 700; '
-            'letter-spacing: 0.4px;' % (t.FONT, t.SIZE_MD + 1))
-        self.statusBlock.setStyleSheet(
-            'QFrame#verdict { background-color: %s; border: none; '
-            'border-radius: %dpx; }' % (color, t.RADIUS))
+            'color: %s; background: transparent; border: none; '
+            'font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'letter-spacing: 0.4px;'
+            % (t.ON_ACCENT if loud else color, t.FONT, t.SIZE_MD,
+               t.W_SEMIBOLD))
+        if loud:
+            self.statusBlock.setStyleSheet(
+                'QFrame#verdict { background-color: %s; border: 1px solid %s; '
+                'border-radius: %dpx; }' % (color, color, t.RADIUS))
+        else:
+            self.statusBlock.setStyleSheet(
+                'QFrame#verdict { background-color: %s; border: 1px solid %s; '
+                'border-radius: %dpx; }'
+                % (t.wash(color, 0.14, t.PANEL),
+                   t.mix(color, t.PANEL, 0.40), t.RADIUS))
 
     def set_action(self, text, open_count=0):
         """Called by the page with the advice from the worst open incident."""
@@ -230,7 +250,10 @@ class HeroBanner(QFrame):
             headline = HEADLINES.get(level, '')
 
         self._paint(color)
-        self._paint_status(color, text, mark)
+        # Warning, critical and lost-contact are worth a solid fill. A calm
+        # verdict, a maintenance window and "still waiting" are not.
+        self._paint_status(color, text, mark,
+                           loud=color in (t.CRITICAL, t.WARN))
         self.headlineLabel.setText(headline)
 
         detail = data.get('diagnosis') or ''
@@ -249,9 +272,10 @@ class HeroBanner(QFrame):
         self.actionLabel.setText(action or '')
         self.actionRow.setVisible(bool(action))
         self.actionLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 12px; background: transparent; '
-            'border: none;' % (t.TEXT if level != cfg.LEVEL_INFO else t.TEXT_DIM,
-                               t.FONT))
+            'color: %s; font-family: "%s"; font-size: %dpx; '
+            'background: transparent; border: none;'
+            % (t.TEXT if level != cfg.LEVEL_INFO else t.TEXT_DIM, t.FONT,
+               t.SIZE_SM))
 
         counts = data.get('alert_counts') or {}
         criticals = counts.get(cfg.LEVEL_CRITICAL, 0)
@@ -310,7 +334,7 @@ class SystemHealthStrip(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(6)
-        head.addWidget(t.caption('System health'))
+        head.addWidget(t.title('System health'))
         head.addWidget(self.HELP.dot(size=12))
         head.addStretch()
         self.summaryLabel = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED)
@@ -447,13 +471,13 @@ class _HealthItem(QFrame):
         self.valueLabel.setText(str(value))
         self.valueLabel.setStyleSheet(
             'color: %s; background: transparent; border: none; '
-            'font-family: %s; font-size: %dpx; font-weight: 600;'
+            'font-family: "%s"; font-size: %dpx; font-weight: 600;'
             % (entry.color if state != stat.NORMAL else t.TEXT, t.FONT,
                t.SIZE_MD))
-        self.stateLabel.setText(entry.label.upper())
+        self.stateLabel.setText(entry.label)
         self.stateLabel.setStyleSheet(
             'color: %s; background: transparent; border: none; '
-            'font-family: %s; font-size: %dpx; font-weight: 700; '
+            'font-family: "%s"; font-size: %dpx; font-weight: 700; '
             'letter-spacing: 0.6px;' % (entry.color, t.FONT, t.SIZE_CAPTION))
 
 
@@ -516,11 +540,12 @@ class EnvironmentCard(w.Card):
         if door == 'OPEN':
             color = (t.CRITICAL if seconds >= cfg.DOOR_ALARM_SECONDS else
                      t.WARN if seconds >= cfg.DOOR_WARNING_SECONDS else t.ACCENT)
-            self.doorPill.set('OPEN', color, 'mark_warning')
+            self.doorPill.set('Open', color, 'mark_warning',
+                              filled=color is not t.ACCENT)
             self.doorNote.setText('open %d s  ·  alarm at %d s'
                                   % (seconds, cfg.DOOR_ALARM_SECONDS))
         else:
-            self.doorPill.set('CLOSED', t.OK, 'mark_normal')
+            self.doorPill.set('Closed', t.OK, 'mark_normal', filled=False)
             operator = data.get('operator')
             self.doorNote.setText('shut' if not operator
                                   else 'last opened by %s' % operator)
@@ -528,17 +553,18 @@ class EnvironmentCard(w.Card):
         power = data.get('power', '--')
         battery = float(data.get('battery') or 0)
         if power == 'MAINS':
-            self.powerPill.set('MAINS', t.OK, 'mark_normal')
+            self.powerPill.set('Mains', t.OK, 'mark_normal', filled=False)
         else:
-            self.powerPill.set('BATTERY',
+            self.powerPill.set('Battery',
                                t.CRITICAL if battery <= cfg.BATTERY_ALARM_PERCENT
-                               else t.WARN, 'mark_warning')
+                               else t.WARN, 'mark_warning', filled=True)
         self.powerNote.setText('battery at %.0f %%' % battery)
 
         connected = data.get('broker_connected', True)
-        self.linkPill.set('ONLINE' if connected else 'OFFLINE',
+        self.linkPill.set('Online' if connected else 'Offline',
                           t.OK if connected else t.CRITICAL,
-                          'mark_normal' if connected else 'mark_critical')
+                          'mark_normal' if connected else 'mark_critical',
+                          filled=not connected)
         self.linkPill.setToolTip(stat.tooltip(
             stat.NORMAL if connected else stat.CRITICAL,
             'Connection to the broker'))
@@ -548,8 +574,10 @@ class EnvironmentCard(w.Card):
                               % (online, sum(counts.values()) or 0))
 
         mode = data.get('mode', '--')
-        self.modePill.set(mode, t.ACCENT if mode == 'MAINTENANCE' else t.OK,
-                          'mark_maintenance' if mode == 'MAINTENANCE' else 'mark_normal')
+        self.modePill.set(mode.title(),
+                          t.ACCENT if mode == 'MAINTENANCE' else t.OK,
+                          'mark_maintenance' if mode == 'MAINTENANCE'
+                          else 'mark_normal', filled=False)
         operator = data.get('mode_operator')
         self.modeNote.setText(('set by %s' % operator) if operator
                               else 'normal operation')
@@ -888,7 +916,7 @@ class DashboardPage(Page):
             self.incidentsBox.addWidget(card)
         if len(ordered) > 4:
             more = t.label('+ %d more on the Incidents page' % (len(ordered) - 4),
-                           size=10, color=t.TEXT_MUTED)
+                           size=t.SIZE_XS, color=t.TEXT_MUTED)
             self.incidentsBox.addWidget(more)
 
     @staticmethod

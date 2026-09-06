@@ -44,8 +44,7 @@ class ScenarioCard(QFrame):
         description.setWordWrap(True)
         layout.addWidget(description)
 
-        expectation = t.label('Expect: ' + scenario.expectation, size=10,
-                              color=t.TEXT_MUTED)
+        expectation = t.prose(scenario.expectation, lead='Expect')
         expectation.setWordWrap(True)
         layout.addWidget(expectation)
         layout.addStretch()

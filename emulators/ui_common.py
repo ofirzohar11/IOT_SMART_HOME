@@ -22,7 +22,7 @@ import time
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
-                             QMainWindow, QVBoxLayout, QWidget)
+                             QMainWindow, QSizePolicy, QVBoxLayout, QWidget)
 
 from config import devices as registry
 from config import mqtt_init as cfg
@@ -30,26 +30,55 @@ from config import settings as thresholds
 from config.mqtt_client import MqttClient, parse_json
 from ui import help as h
 from ui import icons
-from ui.theme import (ALARM, BG, BORDER, FONT, OK, PANEL, TEXT_DIM, WARN,
-                      apply_tooltip_style, label)
+from ui import status as stat
+from ui import theme as t
+# Colours are read as ``t.PANEL`` and never imported by name: a from-import
+# binds whichever palette happened to be loaded when this module was first
+# imported, and the console can change palette after that.
+from ui.theme import apply_tooltip_style, label
 
 TELEMETRY_DELAY_FACTOR = 4     # publish one sample in four when delayed
 
 
-class ConnectionLed(QLabel):
-    """Small coloured dot plus text showing the MQTT connection state."""
+class ConnectionLed(QFrame):
+    """A painted mark plus a word, showing the MQTT connection state.
+
+    This used to be a QLabel printing a bullet character. A bullet is not in
+    every UI font, so Qt substituted a different face for that one glyph and it
+    arrived at a different size and baseline on each platform - the same reason
+    ui.icons exists. It is now the console's own status chip, so an emulator
+    and the console say 'connected' in identical terms.
+    """
 
     def __init__(self):
         super().__init__()
+        self.setObjectName('led')
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 3, 9, 3)
+        row.setSpacing(6)
+        self.mark = icons.Icon('mark_normal', t.SIZE_SM, t.OK, width=1.6)
+        self.textLabel = QLabel()
+        row.addWidget(self.mark, alignment=Qt.AlignVCenter)
+        row.addWidget(self.textLabel, alignment=Qt.AlignVCenter)
         self.set_state(False)
 
     def set_state(self, connected):
-        color = OK if connected else ALARM
-        text = 'CONNECTED' if connected else 'OFFLINE'
-        self.setText('●  ' + text)
-        self.setStyleSheet('color: %s; font-family: %s; font-size: 11px; '
-                           'font-weight: bold; background: transparent; border: none;'
-                           % (color, FONT))
+        state = stat.NORMAL if connected else stat.OFFLINE
+        entry = stat.get(state)
+        color = t.OK if connected else t.OFFLINE_FG
+        self.mark.set_name(entry.mark)
+        self.mark.set_color(color)
+        self.textLabel.setText('Connected' if connected else 'Offline')
+        self.textLabel.setStyleSheet(
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (color, t.FONT, t.SIZE_XS, t.W_MEDIUM))
+        self.setStyleSheet('QFrame#led { background-color: %s; '
+                           'border: 1px solid %s; border-radius: %dpx; }'
+                           % (t.wash(color, 0.11, t.PANEL),
+                              t.mix(color, t.PANEL, 0.40), t.RADIUS_SM))
+        self.setToolTip(stat.tooltip(state))
 
 
 class EmulatorPanel(QFrame):
@@ -78,7 +107,7 @@ class EmulatorPanel(QFrame):
         self._outage_until = None
 
         self.setObjectName('devicePanel')
-        self._paint_border(BORDER)
+        self._paint_border(t.BORDER)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 10)
@@ -86,11 +115,11 @@ class EmulatorPanel(QFrame):
 
         header = QHBoxLayout()
         header.setSpacing(10)
-        header.addWidget(icons.Icon(self.device.icon, 17, TEXT_DIM, width=1.6),
+        header.addWidget(icons.Icon(self.device.icon, 17, t.TEXT_DIM, width=1.6),
                          alignment=Qt.AlignTop)
         titles = QVBoxLayout()
         titles.setSpacing(1)
-        titleLabel = label(self.window_title, size=14, bold=True)
+        titleLabel = t.title(self.window_title, size=t.SIZE_BASE)
         # This window is the simulated hardware, not the console, so the
         # engineering name stays on it - the explanation goes in the tooltip.
         h.set_help(titleLabel, self.device.label, self.device.describes,
@@ -102,7 +131,8 @@ class EmulatorPanel(QFrame):
         titles.addWidget(titleLabel)
         # Wrapped, and given the row's spare width: unwrapped it was cut off
         # mid-word at the edge of every card in the device panel.
-        describes = label(self.device.describes, size=10, color=TEXT_DIM)
+        describes = label(self.device.describes, size=t.SIZE_XS,
+                          color=t.TEXT_MUTED)
         describes.setWordWrap(True)
         titles.addWidget(describes)
         header.addLayout(titles, stretch=1)
@@ -116,7 +146,11 @@ class EmulatorPanel(QFrame):
         self.body = QVBoxLayout()
         self.body.setSpacing(10)
 
-        footer = label(self._topic_note(), size=9, color=TEXT_DIM)
+        # The topics this device publishes and listens on. Set in the tabular
+        # face because that is what they are - identifiers to be compared
+        # character by character, not prose.
+        footer = label(self._topic_note(), size=t.SIZE_CAPTION,
+                       color=t.TEXT_MUTED, mono=True)
         footer.setWordWrap(True)
 
         root.addLayout(header)
@@ -154,8 +188,8 @@ class EmulatorPanel(QFrame):
 
     def _paint_border(self, color):
         self.setStyleSheet('QFrame#devicePanel { background-color: %s; '
-                           'border: 1px solid %s; border-radius: 12px; }'
-                           % (PANEL, color))
+                           'border: 1px solid %s; border-radius: %dpx; }'
+                           % (t.PANEL, color, t.RADIUS_LG))
 
     # -- lifecycle ---------------------------------------------------------
     def start_mqtt(self):
@@ -306,25 +340,31 @@ class EmulatorPanel(QFrame):
     def _paint_fault_banner(self):
         if not self.faults:
             self.faultBanner.hide()
-            self._paint_border(BORDER)
+            self._paint_border(t.BORDER)
             return
 
         labels = []
         for fault_id in sorted(self.faults):
             fault = self.device.fault(fault_id)
             labels.append(fault.label if fault else fault_id)
-        text = 'SIMULATED FAULT  ·  ' + '  ·  '.join(labels)
+        text = 'Simulated fault  ·  ' + '  ·  '.join(labels)
         if self._outage_until is not None:
             remaining = max(0, int(self._outage_until - time.time()))
             text += '  ·  link returns in %d s' % remaining
 
+        # Purple, not amber. An armed drill is not a warning about the stock -
+        # the console reserves SIM for exactly this, and painting it amber here
+        # made a deliberate test look like a real fault on the one screen where
+        # that distinction matters most.
         self.faultBanner.setText(text)
         self.faultBanner.setStyleSheet(
-            'color: #0B1220; background-color: %s; border: none; '
-            'border-radius: 7px; font-family: %s; font-size: 10px; '
-            'font-weight: bold; padding: 5px 9px;' % (WARN, FONT))
+            'color: %s; background-color: %s; border: 1px solid %s; '
+            'border-radius: %dpx; font-family: "%s"; font-size: %dpx; '
+            'font-weight: %d; padding: 6px 10px;'
+            % (t.SIM, t.wash(t.SIM, 0.13, t.PANEL), t.mix(t.SIM, t.PANEL, 0.40),
+               t.RADIUS_SM, t.FONT, t.SIZE_XS, t.W_SEMIBOLD))
         self.faultBanner.show()
-        self._paint_border(WARN)
+        self._paint_border(t.mix(t.SIM, t.BORDER, 0.55))
 
 
 class EmulatorWindow(QMainWindow):
@@ -335,11 +375,11 @@ class EmulatorWindow(QMainWindow):
         self.panel = panel
         self.setWindowTitle(panel.window_title)
         self.setGeometry(*geometry)
-        self.setStyleSheet('QMainWindow { background-color: %s; }' % BG)
+        self.setStyleSheet('QMainWindow { background-color: %s; }' % t.BG)
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(t.SPACE, t.SPACE, t.SPACE, t.SPACE)
         layout.addWidget(panel)
         self.setCentralWidget(container)
 

@@ -69,9 +69,7 @@ class CurrentSensorPanel(EmulatorPanel):
         self.timer.start(PUBLISH_MS)
 
     def _style_value(self, color):
-        self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 28px; font-weight: bold; '
-            'background: transparent; border: none;' % (color, ui.FONT))
+        self.valueLabel.setStyleSheet(ui.reading_style(color))
 
     def on_mqtt_message(self, topic, payload):
         if topic != cfg.TOPIC_COMPRESSOR_STS:

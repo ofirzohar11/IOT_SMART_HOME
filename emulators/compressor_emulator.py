@@ -10,6 +10,7 @@ from ui.qt_env import ensure_qt_plugin_path
 ensure_qt_plugin_path()
 
 from emulators.relay_base import run_relay
+from ui import theme as t
 
 if __name__ == '__main__':
-    run_relay('compressor', '#38BDF8', (40, 700, 330, 250))
+    run_relay('compressor', t.ACCENT, (40, 700, 330, 250))

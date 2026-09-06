@@ -49,7 +49,8 @@ class DoorSensorPanel(EmulatorPanel):
         self.toggleBtn = QPushButton()
         self.toggleBtn.setFixedHeight(42)
         self.toggleBtn.clicked.connect(self.toggle)
-        self.timerLabel = ui.label('closed', size=11, color=ui.TEXT_DIM,
+        self.timerLabel = ui.label('closed', size=ui.SIZE_XS,
+                                   color=ui.TEXT_MUTED,
                                    align=Qt.AlignCenter)
 
         layout.addWidget(self.stateLabel)
@@ -108,31 +109,32 @@ class DoorSensorPanel(EmulatorPanel):
         color = ui.ALARM if elapsed >= cfg.DOOR_ALARM_SECONDS else (
             ui.WARN if elapsed >= cfg.DOOR_WARNING_SECONDS else ui.TEXT_DIM)
         self.timerLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 11px; background: transparent; '
-            'border: none;' % (color, ui.FONT))
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (color, ui.FONT, ui.SIZE_XS, ui.W_MEDIUM))
 
     def _paint(self):
+        # The plate carries the state; the button carries the action. They used
+        # to swap roles - an open door was drawn amber and the button that
+        # opened it was drawn amber too, so the loudest thing on the window was
+        # a control rather than the condition it produced.
         if self.is_open:
-            self.stateLabel.setText('DOOR OPEN')
+            self.stateLabel.setText('Door open')
             self.stateLabel.setStyleSheet(
-                'color: #0B1220; background-color: %s; border: none; '
-                'border-radius: 10px; font-family: %s; font-size: 20px; '
-                'font-weight: bold; padding: 14px;' % (ui.WARN, ui.FONT))
-            self.toggleBtn.setText('CLOSE DOOR')
-            self.toggleBtn.setStyleSheet(ui.button_style(ui.OK))
+                ui.state_plate_style(ui.WARN, loud=True))
+            self.toggleBtn.setText('Close door')
+            self.toggleBtn.setStyleSheet(ui.outline_button_style(ui.ACCENT))
             self.timerLabel.setText('open for 0 s')
         else:
-            self.stateLabel.setText('DOOR CLOSED')
-            self.stateLabel.setStyleSheet(
-                'color: %s; background: transparent; border: 2px solid %s; '
-                'border-radius: 10px; font-family: %s; font-size: 20px; '
-                'font-weight: bold; padding: 12px;' % (ui.OK, ui.OK, ui.FONT))
-            self.toggleBtn.setText('OPEN DOOR')
-            self.toggleBtn.setStyleSheet(ui.button_style(ui.WARN))
+            self.stateLabel.setText('Door closed')
+            self.stateLabel.setStyleSheet(ui.state_plate_style(ui.OK))
+            self.toggleBtn.setText('Open door')
+            self.toggleBtn.setStyleSheet(ui.outline_button_style(ui.ACCENT))
             self.timerLabel.setText('closed')
         self.timerLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 11px; background: transparent; '
-            'border: none;' % (ui.TEXT_DIM, ui.FONT))
+            'color: %s; font-family: "%s"; font-size: %dpx; '
+            'background: transparent; border: none;'
+            % (ui.TEXT_MUTED, ui.FONT, ui.SIZE_XS))
 
 
 if __name__ == '__main__':

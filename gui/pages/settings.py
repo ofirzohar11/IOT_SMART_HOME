@@ -37,23 +37,23 @@ from ui import widgets as w
 
 # The colour and the wording for each kind of consequence.
 EFFECT_STYLE = {
-    thresholds.EFFECT_CRITICAL: (t.CRITICAL, 'CRITICAL',
+    thresholds.EFFECT_CRITICAL: (t.CRITICAL, 'Critical',
                                  'Crossing this raises a critical alert.'),
-    thresholds.EFFECT_WARNING: (t.WARN, 'WARNING',
+    thresholds.EFFECT_WARNING: (t.WARN, 'Warning',
                                 'Crossing this raises a warning.'),
-    thresholds.EFFECT_CONTROL: (t.ACCENT, 'CONTROL',
+    thresholds.EFFECT_CONTROL: (t.ACCENT, 'Control',
                                 'This switches hardware. It raises no alert of '
                                 'its own.'),
-    thresholds.EFFECT_BASELINE: (t.TEXT_DIM, 'REFERENCE',
+    thresholds.EFFECT_BASELINE: (t.TEXT_DIM, 'Reference',
                                  'A healthy reference value. It raises no alert '
                                  'of its own.'),
 }
 
 BASIS_STYLE = {
-    thresholds.BASIS_RESEARCH: (t.OK, 'RESEARCH',
+    thresholds.BASIS_RESEARCH: (t.OK, 'Research',
                                 'This default comes from published cold-chain '
                                 'guidance, named underneath.'),
-    thresholds.BASIS_PROJECT: (t.TEXT_DIM, 'PROJECT',
+    thresholds.BASIS_PROJECT: (t.TEXT_DIM, 'Project',
                                'No published standard fixes this number. It is '
                                'a decision made for this project, and the '
                                'reasoning is given underneath.'),
@@ -87,7 +87,7 @@ class SettingRow(QFrame):
         name = t.label(setting.label, size=13, bold=True)
         head.addWidget(name)
         head.addWidget(h.set_tip(w.Pill(effect_text, effect_color, filled=False,
-                                        size=9), effect_help))
+                                        size=t.SIZE_CAPTION), effect_help))
         head.addWidget(h.set_tip(w.Pill(basis_text, basis_color, filled=False,
                                         size=9), basis_help))
         head.addStretch()
@@ -107,7 +107,8 @@ class SettingRow(QFrame):
         unit.setFixedWidth(30)
         head.addWidget(unit)
 
-        self.recommendedLabel = t.label('', size=10, color=t.TEXT_MUTED)
+        self.recommendedLabel = t.label('', size=t.SIZE_XS,
+                                        color=t.TEXT_MUTED)
         self.recommendedLabel.setFixedWidth(126)
         h.set_help(self.recommendedLabel, 'Recommended default',
                    'The value this setting has until somebody changes it.',
@@ -130,8 +131,7 @@ class SettingRow(QFrame):
         layout.addLayout(head)
 
         # -- what it is ----------------------------------------------------
-        what = t.label(setting.what, size=11, color=t.TEXT_DIM)
-        what.setWordWrap(True)
+        what = t.prose(setting.what, color=t.TEXT_DIM)
         layout.addWidget(what)
 
         # -- what crossing it does ----------------------------------------
@@ -141,21 +141,19 @@ class SettingRow(QFrame):
         effectRow.addWidget(icons.Icon('arrow_right', 12, effect_color,
                                        width=1.5),
                             alignment=Qt.AlignTop)
-        effect = t.label(setting.effect, size=t.SIZE_XS, color=effect_color)
-        effect.setWordWrap(True)
+        effect = t.prose(setting.effect, color=effect_color)
         effectRow.addWidget(effect, stretch=1)
         layout.addLayout(effectRow)
 
         # -- where the number came from ------------------------------------
         prefix = ('Research basis' if setting.basis == thresholds.BASIS_RESEARCH
                   else 'Project choice')
-        source = t.label('%s — %s' % (prefix, setting.source), size=10,
-                         color=t.TEXT_MUTED)
-        source.setWordWrap(True)
+        source = t.prose(setting.source, lead=prefix)
         layout.addWidget(source)
 
         # -- validation message, hidden until there is one ------------------
-        self.errorLabel = t.label('', size=11, color=t.CRITICAL)
+        self.errorLabel = t.label('', size=t.SIZE_XS, color=t.CRITICAL,
+                                  weight=t.W_MEDIUM)
         self.errorLabel.setWordWrap(True)
         self.errorLabel.hide()
         layout.addWidget(self.errorLabel)
@@ -211,9 +209,9 @@ class SettingRow(QFrame):
         self.recommendedLabel.setText('Recommended %s'
                                       % self.setting.format(recommended))
         self.recommendedLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 10px; '
+            'color: %s; font-family: "%s"; font-size: %dpx; '
             'background: transparent; border: none;'
-            % (t.WARN if overridden else t.TEXT_MUTED, t.FONT))
+            % (t.WARN if overridden else t.TEXT_MUTED, t.FONT, t.SIZE_XS))
         # The per-row undo only means anything while the field is off default.
         self.resetButton.setVisible(
             self.text().strip() != self.setting.format(recommended,
@@ -286,8 +284,8 @@ class SettingsPage(Page):
         for effect in (thresholds.EFFECT_CRITICAL, thresholds.EFFECT_WARNING,
                        thresholds.EFFECT_CONTROL, thresholds.EFFECT_BASELINE):
             color, text, tip = EFFECT_STYLE[effect]
-            legend.addWidget(h.set_tip(w.Pill(text, color, filled=False, size=9),
-                                       tip))
+            legend.addWidget(h.set_tip(
+                w.Pill(text, color, filled=False, size=t.SIZE_CAPTION), tip))
         legend.addSpacing(14)
         legend.addWidget(t.label('Where the default comes from:', size=11,
                                  color=t.TEXT_DIM))
@@ -331,8 +329,8 @@ class SettingsPage(Page):
 
         status = QVBoxLayout()
         status.setSpacing(2)
-        self.statusLabel = t.label('', size=12, bold=True)
-        self.appliedLabel = t.label('', size=10, color=t.TEXT_MUTED)
+        self.statusLabel = t.label('', size=t.SIZE_SM, weight=t.W_SEMIBOLD)
+        self.appliedLabel = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED)
         status.addWidget(self.statusLabel)
         status.addWidget(self.appliedLabel)
         row.addLayout(status)
@@ -411,19 +409,22 @@ class SettingsPage(Page):
             self.statusLabel.setText('%d setting%s cannot be applied'
                                      % (problems, '' if problems == 1 else 's'))
             self.statusLabel.setStyleSheet(
-                'color: %s; font-family: %s; font-size: 12px; font-weight: 600; '
-                'background: transparent; border: none;' % (t.CRITICAL, t.FONT))
+                'color: %s; font-family: "%s"; font-size: %dpx; '
+                'font-weight: %d; background: transparent; border: none;'
+                % (t.CRITICAL, t.FONT, t.SIZE_SM, t.W_SEMIBOLD))
         elif dirty:
             self.statusLabel.setText('%d change%s ready to apply'
                                      % (dirty, '' if dirty == 1 else 's'))
             self.statusLabel.setStyleSheet(
-                'color: %s; font-family: %s; font-size: 12px; font-weight: 600; '
-                'background: transparent; border: none;' % (t.ACCENT, t.FONT))
+                'color: %s; font-family: "%s"; font-size: %dpx; '
+                'font-weight: %d; background: transparent; border: none;'
+                % (t.ACCENT, t.FONT, t.SIZE_SM, t.W_SEMIBOLD))
         else:
             self.statusLabel.setText('All settings applied')
             self.statusLabel.setStyleSheet(
-                'color: %s; font-family: %s; font-size: 12px; font-weight: 600; '
-                'background: transparent; border: none;' % (t.OK, t.FONT))
+                'color: %s; font-family: "%s"; font-size: %dpx; '
+                'font-weight: %d; background: transparent; border: none;'
+                % (t.OK, t.FONT, t.SIZE_SM, t.W_SEMIBOLD))
 
         self.applyButton.setEnabled(bool(dirty) and not problems)
         self.cancelButton.setEnabled(bool(dirty))

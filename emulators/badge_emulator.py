@@ -49,11 +49,11 @@ class BadgeReaderPanel(EmulatorPanel):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(7)
 
-        self.readoutLabel = QLabel('NO BADGE')
+        self.readoutLabel = QLabel('No badge')
         self.readoutLabel.setAlignment(Qt.AlignCenter)
         self._style_readout(False)
         self.validityLabel = ui.label('scan a badge before opening the door',
-                                      size=11, color=ui.TEXT_DIM,
+                                      size=ui.SIZE_XS, color=ui.TEXT_MUTED,
                                       align=Qt.AlignCenter)
 
         layout.addWidget(self.readoutLabel)
@@ -62,8 +62,11 @@ class BadgeReaderPanel(EmulatorPanel):
         for badge_id, name, role in STAFF:
             button = QPushButton('%s  ·  %s' % (name, badge_id))
             button.setToolTip(role)
-            button.setFixedHeight(32)
-            button.setStyleSheet(ui.outline_button_style(ui.ACCENT))
+            button.setFixedHeight(ui.CONTROL_HEIGHT)
+            # A staff badge is not the primary action on this window - three
+            # of them in the accent read as three links - but it still has to
+            # look pressable, so it keeps an outline and loses only the colour.
+            button.setStyleSheet(ui.outline_button_style(ui.TEXT_DIM))
             button.clicked.connect(
                 lambda _checked, b=badge_id, n=name, r=role: self.scan(b, n, r))
             layout.addWidget(button)
@@ -72,16 +75,13 @@ class BadgeReaderPanel(EmulatorPanel):
         self.start_mqtt()
 
     def _style_readout(self, valid, color=None):
-        color = color or (ui.OK if valid else ui.OFF)
-        self.readoutLabel.setStyleSheet(
-            'color: %s; background: transparent; border: 2px solid %s; '
-            'border-radius: 10px; font-family: %s; font-size: 16px; '
-            'font-weight: bold; padding: 11px;' % (color, color, ui.FONT))
+        color = color or (ui.OK if valid else ui.OFFLINE_FG)
+        self.readoutLabel.setStyleSheet(ui.state_plate_style(color, loud=False))
 
     def on_fault_changed(self, fault_id, active):
         if fault_id == 'reader_offline' and active:
             self.last_scan = None
-            self.readoutLabel.setText('READER OFFLINE')
+            self.readoutLabel.setText('Reader offline')
             self._style_readout(False, ui.ALARM)
             self.validityLabel.setText('reader is not responding to scans')
 

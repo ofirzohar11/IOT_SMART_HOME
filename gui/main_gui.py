@@ -86,20 +86,27 @@ class NavButton(QPushButton):
         self.icon_name = icon_name
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(38)
+        self.setFixedHeight(36)
         self.setIconSize(QSize(17, 17))
+        # The selected destination is carried by a wash of the accent rather
+        # than by tinting the word blue. Colouring the label made the current
+        # page the only *link*-coloured thing in the rail, which read as the
+        # one item you had not visited yet.
         self.setStyleSheet('''
             QPushButton {
                 background-color: transparent; color: %s;
-                border: 1px solid transparent; border-radius: %dpx;
-                font-family: %s; font-size: %dpx; font-weight: 600;
-                text-align: left; padding-left: 10px;
+                border: none; border-radius: %dpx;
+                font-family: "%s"; font-size: %dpx; font-weight: %d;
+                text-align: left; padding-left: 11px;
             }
             QPushButton:hover { background-color: %s; color: %s; }
-            QPushButton:checked { background-color: %s; color: %s; }
-            QPushButton:focus { border: 1px solid %s; }
-        ''' % (t.TEXT_DIM, t.RADIUS, t.FONT, t.SIZE_BASE, t.PANEL_HOVER,
-               t.TEXT, t.PANEL_ALT, t.ACCENT, t.ACCENT))
+            QPushButton:checked { background-color: %s; color: %s;
+                                  font-weight: %d; }
+            QPushButton:focus { border: 2px solid %s; padding-left: 9px; }
+        ''' % (t.TEXT_DIM, t.RADIUS_SM, t.FONT, t.SIZE_BASE, t.W_MEDIUM,
+               t.PANEL_HOVER, t.TEXT,
+               t.wash(t.ACCENT, 0.14, t.SURFACE), t.TEXT, t.W_SEMIBOLD,
+               t.FOCUS_RING))
         self._repaint_icon()
         self.toggled.connect(lambda _c: self._repaint_icon())
 
@@ -145,8 +152,9 @@ class MainWindow(QWidget):
         right = QWidget()
         right.setStyleSheet('background: transparent;')
         rightLayout = QVBoxLayout(right)
-        rightLayout.setContentsMargins(16, 14, 16, 14)
-        rightLayout.setSpacing(12)
+        rightLayout.setContentsMargins(t.SPACE_LG, t.SPACE_MD, t.SPACE_LG,
+                                      t.SPACE)
+        rightLayout.setSpacing(t.SPACE)
         rightLayout.addWidget(self._build_topbar())
 
         self.stack = QStackedWidget()
@@ -188,29 +196,33 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------
     def _build_nav(self):
         rail = QFrame()
-        rail.setFixedWidth(210)
+        rail.setFixedWidth(216)
         rail.setStyleSheet('QFrame { background-color: %s; border: none; '
                            'border-right: 1px solid %s; }' % (t.SURFACE, t.BORDER))
 
         layout = QVBoxLayout(rail)
-        layout.setContentsMargins(14, 18, 14, 16)
-        layout.setSpacing(6)
+        layout.setContentsMargins(t.SPACE, t.SPACE_LG, t.SPACE, t.SPACE_MD)
+        layout.setSpacing(2)
 
         brand = QVBoxLayout()
-        brand.setSpacing(1)
+        brand.setSpacing(2)
+        brand.setContentsMargins(t.SPACE_XS, 0, 0, 0)
         markRow = QHBoxLayout()
         markRow.setContentsMargins(0, 0, 0, 0)
         markRow.setSpacing(9)
-        markRow.addWidget(icons.Icon('fridge', 18, t.ACCENT, width=1.6),
+        markRow.addWidget(icons.Icon('fridge', 20, t.ACCENT, width=1.7),
                           alignment=Qt.AlignVCenter)
-        markRow.addWidget(t.label('COLD CHAIN', size=t.SIZE_MD, bold=True,
-                                  spacing=0.7))
+        # A product name is a name, not a caption: set in the interface face at
+        # heading size, in sentence case. The spaced capitals it used to carry
+        # made the wordmark read as a section label for the rail below it.
+        markRow.addWidget(t.label('Cold Chain', size=t.SIZE_MD,
+                                  weight=t.W_BOLD, spacing=-0.2))
         markRow.addStretch()
         brand.addLayout(markRow)
         brand.addWidget(t.label('Pharmaceutical Storage Unit 1',
-                                size=t.SIZE_CAPTION, color=t.TEXT_MUTED))
+                                size=t.SIZE_XS, color=t.TEXT_MUTED))
         layout.addLayout(brand)
-        layout.addSpacing(t.SPACE_MD)
+        layout.addSpacing(t.SPACE_LG)
 
         self.navGroup = QButtonGroup(self)
         self.navGroup.setExclusive(True)
@@ -242,7 +254,7 @@ class MainWindow(QWidget):
         layout.addSpacing(t.SPACE_SM)
 
         brokerLabel = t.label('Broker\n%s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
-                              size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+                              size=t.SIZE_XS, color=t.TEXT_MUTED)
         h.set_help(brokerLabel, 'Message broker',
                    'The server every device and this console connect to in '
                    'order to exchange messages.',
@@ -261,9 +273,9 @@ class MainWindow(QWidget):
         row.setContentsMargins(2, 5, 2, 0)
         row.setSpacing(t.SPACE_SM)
         row.addWidget(t.label('Cold Chain Monitor  ·  Pharmaceutical Storage '
-                              'Unit 1', size=t.SIZE_CAPTION, color=t.TEXT_MUTED))
+                              'Unit 1', size=t.SIZE_XS, color=t.TEXT_MUTED))
         row.addStretch()
-        credit = t.label('Created by Ofir Zohar', size=t.SIZE_CAPTION,
+        credit = t.label('Created by Ofir Zohar', size=t.SIZE_XS,
                          color=t.TEXT_MUTED)
         row.addWidget(credit)
         return bar
@@ -275,13 +287,14 @@ class MainWindow(QWidget):
         bar.setFixedHeight(62)
 
         row = QHBoxLayout(bar)
-        row.setContentsMargins(18, 10, 16, 10)
-        row.setSpacing(14)
+        row.setContentsMargins(t.SPACE_MD + 2, 10, t.SPACE, 10)
+        row.setSpacing(t.SPACE_MD)
 
         titles = QVBoxLayout()
-        titles.setSpacing(1)
-        self.pageTitle = t.label('Dashboard', size=15, bold=True)
-        self.pageSubtitle = t.label('', size=11, color=t.TEXT_MUTED)
+        titles.setSpacing(2)
+        self.pageTitle = t.label('Dashboard', size=t.SIZE_LG, weight=t.W_BOLD,
+                                 spacing=-0.2)
+        self.pageSubtitle = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED)
         titles.addWidget(self.pageTitle)
         titles.addWidget(self.pageSubtitle)
         row.addLayout(titles)
@@ -294,7 +307,7 @@ class MainWindow(QWidget):
         self.simPill.hide()
         row.addWidget(self.simPill)
 
-        self.linkPill = w.Pill('CONNECTING', t.OFF, filled=False, size=11)
+        self.linkPill = w.Pill('Connecting', t.OFF, filled=False, size=11)
         glossary.term('connection').apply(self.linkPill)
         row.addWidget(self.linkPill)
 
@@ -303,6 +316,7 @@ class MainWindow(QWidget):
         glossary.term('maintenance').apply(self.modeButton)
         self.modeButton.clicked.connect(self._toggle_mode)
         row.addWidget(self.modeButton)
+
         return bar
 
     def _select(self, index):
@@ -497,9 +511,10 @@ class MainWindow(QWidget):
                 pass
 
     def _apply_connection(self, connected):
-        self.linkPill.set('CONNECTED' if connected else 'DISCONNECTED',
+        self.linkPill.set('Connected' if connected else 'Disconnected',
                           t.OK if connected else t.CRITICAL,
-                          'mark_normal' if connected else 'mark_critical')
+                          'mark_normal' if connected else 'mark_critical',
+                          filled=not connected)
         if not connected:
             self.toast('Lost connection to the broker', t.CRITICAL, 'mark_critical')
             return
@@ -514,7 +529,7 @@ class MainWindow(QWidget):
     def _tick(self):
         # The console must not present a stale snapshot as if it were current.
         if self._last_status and time.time() - self._last_status > STATUS_STALE_SECONDS:
-            self.linkPill.set('NO DATA', t.WARN, 'mark_warning')
+            self.linkPill.set('No data', t.WARN, 'mark_warning', filled=True)
         for page in self.pages:
             try:
                 page.tick()

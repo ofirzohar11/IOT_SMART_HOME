@@ -466,6 +466,28 @@ manager, which has no GUI, guards its state with a lock instead.
 adding a field does not break every parser, and a malformed message is rejected
 cleanly instead of raising an exception inside a callback.
 
+**The typeface ships with the product.** `assets/fonts` holds Inter for the
+interface and JetBrains Mono for every number that changes while you watch it;
+`ui/fonts.py` registers both with Qt before the first window exists. Relying on
+the host to have a font is worse than it sounds — naming one that is absent
+costs Qt a full rebuild of its font alias table on every start-up (161 ms,
+measured), and it then substitutes a face of its own choosing anyway, so the
+same screen came out in three different widths on three operating systems. Both
+faces are SIL Open Font License 1.1, which permits redistribution inside a
+product; the licences sit beside them.
+
+The split between the two is not decoration. Inter's digits are proportional, so
+a live temperature set in it shuffles sideways every time a 1 replaces a 0.
+Anything that updates on screen — a gauge, a stat tile, a column of readings —
+is set in the tabular face; prose gets the proportional one.
+
+**Calm is quiet.** Green, amber and red mean state and nothing else, and only
+amber and red are allowed to be loud. A healthy verdict, a normal device chip
+and an in-range reading are drawn as tinted chips and neutral ink; the solid
+fill is held in reserve for the warning and the alarm. A console that paints
+every good reading bright green has spent all of its contrast before the one
+row that matters arrives.
+
 ---
 
 ## Project layout
@@ -479,7 +501,10 @@ ColdChainMonitor/
 ├── data_manager/    rules, control loop, incidents, device health, persistence
 ├── gui/             console shell, charts, composite widgets
 │   └── pages/       dashboard, devices, incidents, simulations, history
-├── ui/              design tokens, reusable widgets, Qt bootstrap
+├── ui/              design tokens, typeface loading, reusable widgets,
+│                    Qt bootstrap
+├── assets/fonts/    Inter and JetBrains Mono (SIL OFL 1.1), shipped so the
+│                    console renders identically on every platform
 ├── docs/            screenshots
 ├── run/
 │   ├── macos/       start_all.command, start_panel.command

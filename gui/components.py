@@ -79,7 +79,11 @@ class MetricTile(w.StatTile):
             self.set_value('--', t.TEXT_MUTED)
             self.set_caption('%s · no reading' % self._caption)
             return
-        self.set_value((self.fmt % value) + self.unit + suffix, color)
+        # A healthy reading is ink, not green. Painting it green said nothing
+        # the caption underneath did not already say, and it spent the contrast
+        # that the one tile which does go amber needs in order to stand out.
+        self.set_value((self.fmt % value) + self.unit + suffix,
+                       t.TEXT if color == t.OK else color)
         if state and state != stat.NORMAL:
             self.set_caption('%s · %s' % (self._caption,
                                           stat.label(state)))
@@ -130,7 +134,7 @@ class ActuatorCard(QFrame):
                                      width=1.6)
         head.addWidget(self.deviceIcon, alignment=Qt.AlignVCenter)
         name = self.help.name if self.help else self.device.label
-        head.addWidget(t.caption(name))
+        head.addWidget(t.title(name))
         if self.help:
             head.addWidget(self.help.dot(size=11))
         head.addStretch()
@@ -161,12 +165,13 @@ class ActuatorCard(QFrame):
             measuredCaption = t.caption('Really doing', color=t.TEXT_MUTED)
             glossary.term('measured').apply(measuredCaption, 'Really doing')
             measuredColumn.addWidget(measuredCaption)
-            self.measuredLabel = t.label('--', size=15, color=t.TEXT_MUTED,
-                                         bold=True, mono=True,
+            self.measuredLabel = t.label('--', size=t.SIZE_MD,
+                                         color=t.TEXT_MUTED,
+                                         weight=t.W_MEDIUM, mono=True,
                                          align=Qt.AlignLeft | Qt.AlignVCenter)
             self.measuredLabel.setFixedHeight(30)
             measuredColumn.addWidget(self.measuredLabel)
-            self.captionLabel = t.label('', size=9, color=t.TEXT_MUTED)
+            self.captionLabel = t.label('', size=t.SIZE_XS, color=t.TEXT_MUTED)
             self.captionLabel.setWordWrap(True)
             measuredColumn.addWidget(self.captionLabel)
             measuredColumn.addStretch()
@@ -177,7 +182,7 @@ class ActuatorCard(QFrame):
             # Saying so out loud is honest, and it explains why the other two
             # cards carry a second number and this one does not.
             note = t.label('No separate sensor - the sounder cannot confirm '
-                           'itself.', size=9, color=t.TEXT_MUTED)
+                           'itself.', size=t.SIZE_XS, color=t.TEXT_MUTED)
             note.setWordWrap(True)
             layout.addWidget(note)
         layout.addStretch()
@@ -191,8 +196,11 @@ class ActuatorCard(QFrame):
         self.stateLabel.setText('ON' if is_on else 'OFF')
         self.stateLabel.setStyleSheet(
             'color: %s; background-color: %s; border: none; border-radius: %dpx; '
-            'font-family: %s; font-size: 13px; font-weight: 700;'
-            % ('#08111F' if is_on else t.TEXT_DIM, color, t.RADIUS_SM, t.FONT))
+            'font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'letter-spacing: 0.4px;'
+            % (t.ON_ACCENT if is_on else t.TEXT_DIM,
+               color if is_on else t.PANEL_ALT, t.RADIUS_SM, t.FONT,
+               t.SIZE_BASE, t.W_SEMIBOLD))
 
     def set_state(self, is_on):
         self._on = is_on
@@ -230,7 +238,7 @@ class ActuatorCard(QFrame):
         """
         state = stat.worst(self._health_state, self._measured_state)
         entry = stat.get(state)
-        self.healthPill.set(entry.label.upper(), entry.color, entry.mark)
+        self.healthPill.set(entry.label, entry.color, entry.mark)
         self.healthPill.setToolTip(stat.tooltip(
             state, 'Equipment status: %s' % entry.label,
             extra=getattr(self, '_health_term', '')))
@@ -248,13 +256,15 @@ class ActuatorCard(QFrame):
             return
         self.measuredLabel.setText(text)
         self.measuredLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 15px; font-weight: 600; '
-            'background: transparent; border: none;' % (color, t.FONT_MONO))
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (color, t.FONT_MONO, t.SIZE_MD, t.W_MEDIUM))
         self.captionLabel.setText(caption)
         self.captionLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: 9px; background: transparent; '
-            'border: none;' % (color if color == t.CRITICAL else t.TEXT_MUTED,
-                               t.FONT))
+            'color: %s; font-family: "%s"; font-size: %dpx; '
+            'background: transparent; border: none;'
+            % (color if color == t.CRITICAL else t.TEXT_MUTED, t.FONT,
+               t.SIZE_XS))
 
 
 # ===========================================================================
@@ -302,15 +312,15 @@ class DeviceCard(QFrame):
         titles.setSpacing(2)
         nameRow = QHBoxLayout()
         nameRow.setSpacing(5)
-        nameRow.addWidget(t.label(self.help.name if self.help else device.label,
-                                  size=t.SIZE_SM, bold=True))
+        nameRow.addWidget(t.title(self.help.name if self.help
+                                  else device.label, size=t.SIZE_SM))
         if self.help:
             nameRow.addWidget(self.help.dot(size=11))
         nameRow.addStretch()
         titles.addLayout(nameRow)
         # The technical identity is kept, one step down the hierarchy.
         identity = t.label('%s · %s' % (device.label, device.kind.title()),
-                           size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
+                           size=t.SIZE_XS, color=t.TEXT_MUTED)
         identity.setWordWrap(True)
         titles.addWidget(identity)
         head.addLayout(titles, stretch=1)
@@ -323,15 +333,15 @@ class DeviceCard(QFrame):
         context.setSpacing(6)
         context.addWidget(icons.Icon('room', 11, t.TEXT_MUTED, width=1.5),
                           alignment=Qt.AlignVCenter)
-        location = t.label(device.group, size=t.SIZE_CAPTION,
+        location = t.label(device.group, size=t.SIZE_XS,
                            color=t.TEXT_MUTED)
         h.set_tip(location, 'Where this device sits: %s.'
                             % glossary.GROUPS.get(device.group, device.group))
         context.addWidget(location)
         if device.describes:
-            context.addWidget(t.label('·', size=t.SIZE_CAPTION,
+            context.addWidget(t.label('·', size=t.SIZE_XS,
                                       color=t.TEXT_MUTED))
-            measures = t.label(device.describes, size=t.SIZE_CAPTION,
+            measures = t.label(device.describes, size=t.SIZE_XS,
                                color=t.TEXT_MUTED)
             measures.setWordWrap(True)
             h.set_tip(measures, 'What this device measures or switches.')
@@ -341,8 +351,7 @@ class DeviceCard(QFrame):
         layout.addLayout(context)
 
         # -- what it says now ----------------------------------------------
-        self.valueLabel = t.label('--', size=t.SIZE_XL - 2, bold=True,
-                                  mono=True)
+        self.valueLabel = t.value('--', size=t.SIZE_XL - 2)
         h.set_tip(self.valueLabel, 'The reading this device is publishing '
                                    'right now.')
         layout.addWidget(self.valueLabel)
@@ -358,21 +367,18 @@ class DeviceCard(QFrame):
 
         # -- how to judge it -------------------------------------------------
         if self.help and self.help.normal:
-            expected = t.label('Normal: ' + self.help.normal,
-                               size=t.SIZE_CAPTION, color=t.TEXT_DIM)
-            expected.setWordWrap(True)
+            expected = t.prose(self.help.normal, lead='Normal',
+                               color=t.TEXT_DIM)
             h.set_tip(expected, 'The range or state this device is expected to '
                                 'report when everything is working.')
             layout.addWidget(expected)
 
         # -- why anyone should care ------------------------------------------
         if self.help and self.help.why:
-            why = t.label('Why it matters: ' + self.help.why,
-                          size=t.SIZE_CAPTION, color=t.TEXT_MUTED)
-            why.setWordWrap(True)
+            why = t.prose(self.help.why, lead='Why it matters')
             layout.addWidget(why)
 
-        self.freshnessLabel = t.label('no telemetry yet', size=t.SIZE_CAPTION,
+        self.freshnessLabel = t.label('no telemetry yet', size=t.SIZE_XS,
                                       color=t.TEXT_MUTED)
         h.set_help(self.freshnessLabel, 'Freshness',
                    'How long ago this device last sent a reading.',
@@ -382,7 +388,7 @@ class DeviceCard(QFrame):
         layout.addWidget(self.freshnessLabel)
 
         # -- the troubleshooting half, only when there is trouble ------------
-        self.incidentLabel = t.label('', size=t.SIZE_CAPTION, color=t.WARN)
+        self.incidentLabel = t.label('', size=t.SIZE_XS, color=t.WARN)
         self.incidentLabel.setWordWrap(True)
         h.set_help(self.incidentLabel, 'Related incidents',
                    'Problems the system currently has open against this '
@@ -399,7 +405,7 @@ class DeviceCard(QFrame):
         actionLayout.setContentsMargins(9, 7, 9, 7)
         actionLayout.setSpacing(2)
         self.actionCaption = t.caption('What to do', color=t.WARN)
-        self.actionLabel = t.label('', size=t.SIZE_CAPTION, color=t.TEXT)
+        self.actionLabel = t.label('', size=t.SIZE_XS, color=t.TEXT)
         self.actionLabel.setWordWrap(True)
         actionLayout.addWidget(self.actionCaption)
         actionLayout.addWidget(self.actionLabel)
@@ -411,7 +417,7 @@ class DeviceCard(QFrame):
         self.actionBox.hide()
         layout.addWidget(self.actionBox)
 
-        self.faultLabel = t.label('', size=t.SIZE_CAPTION, color=t.SIM)
+        self.faultLabel = t.label('', size=t.SIZE_XS, color=t.SIM)
         self.faultLabel.setWordWrap(True)
         h.set_help(self.faultLabel, 'Simulated fault armed',
                    glossary.term('simulated').what,
@@ -438,7 +444,7 @@ class DeviceCard(QFrame):
 
         self.valueLabel.setText(value_text)
         self.valueLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: %dpx; font-weight: 600; '
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: 600; '
             'background: transparent; border: none;'
             % (t.TEXT if state != stat.OFFLINE else t.TEXT_MUTED,
                t.FONT_MONO, t.SIZE_XL - 2))
@@ -451,9 +457,9 @@ class DeviceCard(QFrame):
             self.freshnessLabel.setText('Updated %s' % humanise_age(age_seconds))
             color = t.TEXT_MUTED
         self.freshnessLabel.setStyleSheet(
-            'color: %s; font-family: %s; font-size: %dpx; '
+            'color: %s; font-family: "%s"; font-size: %dpx; '
             'background: transparent; border: none;'
-            % (color, t.FONT, t.SIZE_CAPTION))
+            % (color, t.FONT, t.SIZE_XS))
 
         self._update_incidents(incidents, state)
         self._update_faults(faults)
@@ -474,9 +480,9 @@ class DeviceCard(QFrame):
             self.incidentLabel.setText('Open incident: %s%s'
                                        % (explain.name, extra))
             self.incidentLabel.setStyleSheet(
-                'color: %s; font-family: %s; font-size: %dpx; '
-                'background: transparent; border: none;'
-                % (tone, t.FONT, t.SIZE_CAPTION))
+                'color: %s; font-family: "%s"; font-size: %dpx; '
+                'font-weight: %d; background: transparent; border: none;'
+                % (tone, t.FONT, t.SIZE_XS, t.W_MEDIUM))
             self.incidentLabel.show()
             self._show_action(explain.action, tone)
             return
@@ -510,9 +516,9 @@ class DeviceCard(QFrame):
             'border-left: 2px solid %s; border-radius: %dpx; }'
             % (t.PANEL_ALT, color, t.RADIUS_SM))
         self.actionCaption.setStyleSheet(
-            'color: %s; font-family: %s; font-size: %dpx; font-weight: 600; '
-            'letter-spacing: 0.8px; background: transparent; border: none;'
-            % (color, t.FONT, t.SIZE_CAPTION))
+            'color: %s; font-family: "%s"; font-size: %dpx; font-weight: %d; '
+            'background: transparent; border: none;'
+            % (color, t.FONT, t.SIZE_XS, t.W_SEMIBOLD))
         self.actionLabel.setText(text)
         self.actionBox.show()
 
@@ -524,7 +530,7 @@ class DeviceCard(QFrame):
         for fault_id in faults:
             fault = self.device.fault(fault_id)
             labels.append(fault.label if fault else fault_id)
-        self.faultLabel.setText('%s: %s' % (stat.label(stat.SIMULATED).upper(),
+        self.faultLabel.setText('%s: %s' % (stat.label(stat.SIMULATED),
                                             ', '.join(labels)))
         self.faultLabel.show()
 
@@ -546,7 +552,7 @@ class EventFeed(QFrame):
 
         header = QHBoxLayout()
         header.setSpacing(6)
-        header.addWidget(t.caption(title))
+        header.addWidget(t.title(title))
         header.addWidget(h.dot(
             'Recent activity',
             'Everything the monitoring rules have reported since this window '
@@ -558,7 +564,8 @@ class EventFeed(QFrame):
                  'deleted - the full record stays on the History page.',
             size=12))
         header.addStretch()
-        self.counterLabel = t.label('0 events', size=10, color=t.TEXT_MUTED)
+        self.counterLabel = t.label('0 events', size=t.SIZE_XS,
+                                    color=t.TEXT_MUTED)
         clearBtn = QPushButton('Clear')
         clearBtn.setStyleSheet(t.ghost_button_style())
         h.set_tip(clearBtn, 'Empty this panel. The stored record is not '
@@ -605,9 +612,10 @@ class EventFeed(QFrame):
         row.setContentsMargins(10, 7, 10, 7)
         row.setSpacing(9)
 
-        timeLabel = t.label(stamp, size=10, color=t.TEXT_MUTED, mono=True)
+        timeLabel = t.label(stamp, size=t.SIZE_CAPTION, color=t.TEXT_MUTED,
+                            mono=True)
         timeLabel.setFixedWidth(54)
-        badge = w.LevelPill(level, size=9)
+        badge = w.LevelPill(level, size=t.SIZE_CAPTION)
         badge.setMinimumWidth(86)
 
         text = message
@@ -623,7 +631,7 @@ class EventFeed(QFrame):
         row.addWidget(badge, alignment=Qt.AlignTop)
         row.addWidget(messageLabel, stretch=1)
         if simulated:
-            sim = w.Pill('SIM', t.SIM, filled=False, size=9,
+            sim = w.Pill('Sim', t.SIM, filled=False, size=t.SIZE_CAPTION,
                          mark=stat.mark(stat.SIMULATED))
             sim.setToolTip(stat.tooltip(stat.SIMULATED))
             row.addWidget(sim, alignment=Qt.AlignTop)
@@ -690,7 +698,7 @@ class IncidentCard(QFrame):
         # -- severity and lifecycle ---------------------------------------
         head = QHBoxLayout()
         head.setSpacing(7)
-        severityPill = w.LevelPill(severity, size=9)
+        severityPill = w.LevelPill(severity, size=t.SIZE_CAPTION)
         h.set_help(severityPill, 'Severity: %s' % severity.title(),
                    'Critical means stock is at risk now. Warning means '
                    'something needs checking before it becomes critical.',
@@ -698,8 +706,8 @@ class IncidentCard(QFrame):
         head.addWidget(severityPill)
         head.addStretch()
         if incident.get('simulated'):
-            simPill = w.Pill(stat.label(stat.SIMULATED).upper(), t.SIM,
-                             filled=False, size=9,
+            simPill = w.Pill(stat.label(stat.SIMULATED), t.SIM,
+                             filled=False, size=t.SIZE_CAPTION,
                              mark=stat.mark(stat.SIMULATED))
             glossary.term('simulated').apply(simPill)
             head.addWidget(simPill)
@@ -711,8 +719,9 @@ class IncidentCard(QFrame):
         status_colors = {db.STATUS_ACTIVE: t.TEXT_DIM,
                          db.STATUS_ACKNOWLEDGED: t.ACCENT,
                          db.STATUS_RESOLVED: t.OK}
-        statusPill = w.Pill(status, status_colors.get(status, t.TEXT_DIM),
-                            filled=False, size=9,
+        statusPill = w.Pill(status.title(),
+                            status_colors.get(status, t.TEXT_DIM),
+                            filled=False, size=t.SIZE_CAPTION,
                             mark={db.STATUS_ACTIVE: 'clock',
                                   db.STATUS_ACKNOWLEDGED: 'info',
                                   db.STATUS_RESOLVED: 'check'}.get(status))
@@ -725,20 +734,17 @@ class IncidentCard(QFrame):
         layout.addLayout(head)
 
         # -- what happened, in plain words --------------------------------
-        headline = t.label(explain.name, size=13, bold=True)
+        headline = t.label(explain.name, size=t.SIZE_BASE, weight=t.W_SEMIBOLD)
         headline.setWordWrap(True)
         layout.addWidget(headline)
 
         if not compact and explain.what:
-            what = t.label(explain.what, size=11, color=t.TEXT_DIM)
-            what.setWordWrap(True)
-            layout.addWidget(what)
+            layout.addWidget(t.prose(explain.what, size=t.SIZE_SM,
+                                     color=t.TEXT_DIM))
 
         if not compact and explain.why:
-            why = t.label('Why it matters: ' + explain.why, size=11,
-                          color=t.TEXT_DIM)
-            why.setWordWrap(True)
-            layout.addWidget(why)
+            layout.addWidget(t.prose(explain.why, lead='Why it matters',
+                                     size=t.SIZE_SM))
 
         # -- what to do ----------------------------------------------------
         if explain.action:
@@ -755,7 +761,8 @@ class IncidentCard(QFrame):
         meta.append('open for %s' % humanise_duration(duration))
         if incident.get('acknowledged_by'):
             meta.append('acknowledged by %s' % incident['acknowledged_by'])
-        metaLabel = t.label('  ·  '.join(meta), size=10, color=t.TEXT_MUTED)
+        metaLabel = t.label('  ·  '.join(meta), size=t.SIZE_XS,
+                            color=t.TEXT_MUTED)
         metaLabel.setWordWrap(True)
         layout.addWidget(metaLabel)
 
@@ -796,7 +803,7 @@ class IncidentCard(QFrame):
         row.setSpacing(2)
         if not compact:
             row.addWidget(t.caption('What to do', color=color))
-        body = t.label(text, size=11, color=t.TEXT)
+        body = t.label(text, size=t.SIZE_XS, color=t.TEXT)
         body.setWordWrap(True)
         row.addWidget(body)
         h.set_help(box, 'Recommended action',

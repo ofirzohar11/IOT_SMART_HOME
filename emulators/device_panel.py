@@ -48,8 +48,8 @@ class DevicePanelWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(t.SPACE_MD, t.SPACE_MD, t.SPACE_MD, t.SPACE_MD)
+        root.setSpacing(t.SPACE)
 
         root.addWidget(self._build_header())
 
@@ -73,7 +73,7 @@ class DevicePanelWindow(QMainWindow):
         ]
 
         grid = QGridLayout()
-        grid.setSpacing(12)
+        grid.setSpacing(t.SPACE)
         # No alignment flag: the cards stretch to fill their row, so the spare
         # height goes inside the cards rather than into a gap between the rows.
         for index, panel in enumerate(self.panels):
@@ -95,17 +95,19 @@ class DevicePanelWindow(QMainWindow):
         header.setFixedHeight(66)
 
         row = QHBoxLayout(header)
-        row.setContentsMargins(18, 10, 18, 10)
+        row.setContentsMargins(t.SPACE_MD + 2, 10, t.SPACE_MD + 2, 10)
 
         titles = QVBoxLayout()
-        titles.setSpacing(1)
-        titles.addWidget(t.label('DEVICE PANEL', size=16, bold=True))
-        titles.addWidget(t.label('8 sensors and 3 relay actuators - each with its own '
-                                 'MQTT connection', size=11, color=t.TEXT_DIM))
+        titles.setSpacing(2)
+        titles.addWidget(t.label('Device panel', size=t.SIZE_LG,
+                                 weight=t.W_BOLD, spacing=-0.2))
+        titles.addWidget(t.label('8 sensors and 3 relay actuators - each with '
+                                 'its own MQTT connection', size=t.SIZE_XS,
+                                 color=t.TEXT_MUTED))
         row.addLayout(titles)
         row.addStretch()
         row.addWidget(t.label('broker: %s:%s' % (cfg.BROKER_HOST, cfg.BROKER_PORT),
-                              size=10, color=t.TEXT_DIM))
+                              size=t.SIZE_XS, color=t.TEXT_MUTED, mono=True))
         return header
 
     def closeEvent(self, event):
