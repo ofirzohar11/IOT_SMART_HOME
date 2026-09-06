@@ -9,10 +9,18 @@ REM script given to it in its own console window.
 setlocal EnableExtensions
 
 REM This file lives in <project>\run\windows, so the root is two levels up.
+REM
+REM The path is quoted everywhere it is echoed, including inside this block.
+REM cmd expands a parenthesised block in full before it runs any of it, so an
+REM unquoted path containing a closing parenthesis - "Program Files (x86)", or
+REM the "project (1)" a second download of the zip is unpacked into - ends the
+REM block early and the rest of the line is left over as a stray command. The
+REM whole file then dies at parse time with "was unexpected at this time",
+REM before it has looked for Python or reported anything a reader could act on.
 cd /d "%~dp0..\.."
 if errorlevel 1 (
     echo ERROR: could not open the project folder.
-    echo   %~dp0..\..
+    echo   "%~dp0..\.."
     echo.
     pause
     exit /b 1
