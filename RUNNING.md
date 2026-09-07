@@ -126,9 +126,17 @@ run/macos/start_all.command
 
 `Ctrl-C` in that terminal stops every component at once.
 
-> **First time only.** macOS may refuse to open a downloaded `.command` file.
-> Right-click it → **Open** → **Open** confirms it once. If it is not
-> executable, run `chmod +x run/macos/*.command run/macos/*.sh`.
+> **First time only.** If you downloaded this project rather than cloning it,
+> macOS refuses to open the `.command` file: *"Apple could not verify
+> start_panel.command is free of malware."* Clear the download flag once, from
+> the project folder:
+>
+> ```bash
+> xattr -d com.apple.quarantine run/macos/*.command run/macos/*.sh
+> ```
+>
+> Then the double-click works. Running the file from a terminal instead needs
+> nothing - Gatekeeper only guards the Finder double-click.
 
 ### Windows
 
@@ -470,10 +478,38 @@ Restart every component so they all agree on the new root.
 chmod +x run/macos/*.command run/macos/*.sh
 ```
 
-### macOS refuses to open the `.command` file
+### macOS: *"Apple could not verify ... is free of malware"*
 
-Gatekeeper blocks scripts that arrived from the internet. Right-click the file
-in Finder → **Open** → **Open**. You only have to confirm once.
+Every file that arrives over the network is tagged `com.apple.quarantine`, and
+Gatekeeper will not let Finder open a quarantined script that nobody has signed.
+A clone is not affected; a downloaded zip is. The dialog offers only **Done** and
+**Move to Trash** - there is no "Open anyway" in it, and on macOS 15 the old
+right-click → **Open** route is gone too, so the file cannot be released from
+the dialog itself.
+
+Remove the tag, from the project folder:
+
+```bash
+xattr -d com.apple.quarantine run/macos/*.command run/macos/*.sh
+```
+
+Double-clicking works from then on. `xattr run/macos/*` lists what is left, and
+prints nothing about quarantine once it is cleared.
+
+Two things worth knowing:
+
+* **A terminal does not care.** `./run/macos/start_panel.command` runs a
+  quarantined file without complaint - Gatekeeper guards the Finder
+  double-click, not execution.
+* **`git clone` avoids the whole problem**, because the files are written by git
+  rather than downloaded by a browser, so they are never tagged.
+
+If the file is also not executable - some unzip tools drop the bit, though the
+GitHub zip keeps it:
+
+```bash
+chmod +x run/macos/*.command run/macos/*.sh
+```
 
 ### Windows: `ERROR: Python 3 was not found on this computer.`
 
