@@ -363,20 +363,34 @@ that verifies it. The events table marks which rows came from a simulation.
 
 ## 6. Speeding up the demo
 
-The default timers are realistic but slow for a 10-minute recording. To make the
-alarms fire sooner, edit `config/mqtt_init.py`:
+The default timers are realistic but slow for a 10-minute recording. Shorten
+them from the console's **Settings** page, while everything is running:
 
-```python
-DOOR_WARNING_SECONDS = 10        # default 20
-DOOR_ALARM_SECONDS = 20          # default 45
-EXCURSION_ALARM_SECONDS = 30     # default 90
-BATTERY_WARNING_SECONDS = 20     # default 60
-SENSOR_TIMEOUT_SECONDS = 15      # default 25
-PROBE_DISAGREE_SECONDS = 12      # default 30
-ACTUATOR_FAULT_SECONDS = 6       # default 15
-```
+| Setting | Demo value | Default |
+|---|---|---|
+| `DOOR_WARNING_SECONDS` | 10 | 20 |
+| `DOOR_ALARM_SECONDS` | 20 | 45 |
+| `EXCURSION_ALARM_SECONDS` | 30 | 90 |
+| `BATTERY_WARNING_SECONDS` | 20 | 60 |
+| `SENSOR_TIMEOUT_SECONDS` | 15 | 25 |
+| `PROBE_DISAGREE_SECONDS` | 12 | 30 |
+| `ACTUATOR_FAULT_SECONDS` | 6 | 15 |
 
-Restart the data manager afterwards — it reads these once at startup.
+**Nothing needs restarting.** Applying publishes the full set, retained, on the
+`settings` topic; the data manager and every emulator are subscribed and apply
+it to the next rule evaluation. The retained copy also means a component you
+start afterwards picks the values up as it connects, rather than running on the
+defaults it booted with.
+
+The overrides are saved to `config/thresholds.json`, so they survive a restart.
+That file is gitignored — the numbers you demonstrate with are yours, and are
+not forced on the next person to clone the project. **Restore defaults** on the
+same page deletes it.
+
+Editing the literals in `config/mqtt_init.py` still works, and is the right
+place to change what the system *ships* with rather than what this installation
+is currently running. Those are read at startup, so that route does need a
+restart.
 
 Arming **Ambient Room Sensor → Building cooling failure** is the other
 accelerator: a hot storeroom makes the cabinet warm up far faster.
@@ -574,11 +588,13 @@ rm database/coldchain.db*
 | Task | Command (macOS) |
 |---|---|
 | Install | `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
-| Start everything, 8 windows | `run/macos/start_all.command` |
+| Start everything, 13 windows | `run/macos/start_all.command` |
 | Start everything, 1 device window | `run/macos/start_panel.command` |
 | Start one component | `.venv/bin/python gui/main_gui.py` |
 | Stop everything | `Ctrl-C`, or `pkill -f "data_manager.py"` |
+| Release a downloaded launcher | `xattr -d com.apple.quarantine run/macos/*.command run/macos/*.sh` |
 | Clear the database | `rm database/coldchain.db*` |
+| Reset the thresholds | `rm config/thresholds.json`, or **Restore defaults** on the Settings page |
 | Check for stray managers | `ps aux \| grep "[d]ata_manager.py"` |
 
 On Windows the equivalents are `run\windows\start_all.bat` and

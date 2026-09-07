@@ -24,9 +24,10 @@ Two things make this hard to catch with a plain thermometer:
 
 This project addresses both. Eleven emulated devices publish to an MQTT broker; a
 data manager applies duration-aware storage rules, drives the cooling hardware
-and maintains an incident record; and a five-page operator console shows live
-conditions, device health, incidents, the stored audit trail, and a fault
-injection bench for proving the alarms actually work.
+and maintains an incident record; and a six-page operator console shows live
+conditions, device health, incidents, the stored audit trail, a fault injection
+bench for proving the alarms actually work, and the thresholds every rule is
+judged against.
 
 ![Dashboard](docs/screenshots/20_dashboard_normal.png)
 
@@ -34,7 +35,7 @@ injection bench for proving the alarms actually work.
 
 ## Architecture
 
-Fourteen independent processes: eleven emulated devices, the data manager, and
+Thirteen independent processes: eleven emulated devices, the data manager, and
 the GUI. Nothing imports another component's state — everything travels over the
 broker.
 
@@ -57,7 +58,7 @@ flowchart LR
     B(("MQTT broker<br/>broker.hivemq.com"))
     M["Data manager<br/>rules · control · storage"]
     DB[("SQLite<br/>readings · events · incidents")]
-    G["Operator console<br/>5 pages"]
+    G["Operator console<br/>6 pages"]
 
     subgraph Actuators["Actuators (relays)"]
         C["Compressor"]
@@ -160,7 +161,7 @@ probe and an unbadged entry all become visible.
 | Fan relay | `emulators/fan_emulator.py` | Air circulation. |
 | Siren relay | `emulators/siren_emulator.py` | Audible alarm. |
 | Data manager | `data_manager/data_manager.py` | Subscribes to every sensor, evaluates the rules once per second, drives the actuators, writes to SQLite, publishes status and alerts. |
-| Operator console | `gui/main_gui.py` | Five-page console: Dashboard, Devices, Incidents, Simulations, History. |
+| Operator console | `gui/main_gui.py` | Six-page console: Dashboard, Devices, Incidents, Simulations, History, Settings. |
 | Device panel | `emulators/device_panel.py` | Optional shell that hosts all eleven devices in one window. |
 
 Faults are no longer switches on each emulator window - they are armed from the
@@ -191,7 +192,7 @@ changes.
 
 ## The operator console
 
-Five pages, each answering a different question.
+Six pages, each answering a different question.
 
 | Page | Answers |
 |---|---|
@@ -200,6 +201,7 @@ Five pages, each answering a different question.
 | **Incidents** | What has gone wrong, who acknowledged it, how long did it last? |
 | **Simulations** | Does the alarm actually fire when this fails? |
 | **History** | What does the stored record say? |
+| **Settings** | What limits is all of the above being judged against? |
 
 The dashboard is ordered the way an operator asks: a single status banner and a
 plain-language headline first, then the two gauges, then the diagnostic
@@ -267,6 +269,34 @@ because a device with its connection cut cannot hear the command to restore it.
 | Fan Failure | Circulation fan seized |
 | Sensor Blackout | Both temperature probes stop reporting |
 
+### Settings
+
+Every threshold on this page is still *declared* in `config/mqtt_init.py`, and
+that literal remains the recommended default. What the Settings page adds is the
+ability to override one at runtime and have the override outlive a restart.
+
+Three things keep the thirteen processes agreeing on a number the operator just
+changed:
+
+* **The file.** `config/settings.py` writes the overrides to
+  `config/thresholds.json`, atomically, so a crash mid-write cannot leave half a
+  file. It is what a cold start reads, and it is gitignored - the limits one
+  person demonstrates with are not forced on the next.
+* **The broker.** The console publishes the full effective set, retained, on the
+  `settings` topic. The manager and every emulator subscribe and apply it, so a
+  change reaches a running system without restarting anything, and a device that
+  connects later still receives it.
+* **Late binding.** Nothing binds a threshold at import. Every process reads
+  `cfg.SOMETHING` at the moment it needs it, so a value written onto the module
+  is picked up by the next rule evaluation and the next repaint.
+
+Saved values are validated as a complete set before they are applied - the
+recommended defaults standing in for anything the file does not mention -
+because the relations that matter here run *between* thresholds, and half a set
+proves nothing. A hand-edited file cannot put an impossible number into the rule
+engine; anything that fails validation is reported and ignored rather than
+silently accepted.
+
 ---
 
 ## MQTT topics
@@ -291,6 +321,7 @@ Root: `HIT/coldchain/ofir/unit1`
 | `incident/cmd` | console → manager | `{"action": "acknowledge", "id": 42, "operator": "..."}` |
 | `sim/cmd` | console → every device | `{"action": "set", "device": "current", "fault": "open_circuit", "active": true}` |
 | `sim/sts/<device>` | device → manager, console *(retained)* | `{"device": "current", "faults": ["open_circuit"]}` |
+| `settings` | console → manager, every device *(retained)* | the full effective threshold set, published whenever it is changed |
 
 `<device>` is one of `compressor`, `fan`, `siren`.
 
@@ -494,8 +525,8 @@ row that matters arrives.
 
 ```
 ColdChainMonitor/
-├── config/          broker settings, topic tree, thresholds, device registry,
-│                    fault catalogue, MQTT wrapper
+├── config/          broker settings, topic tree, thresholds and their runtime
+│                    overrides, device registry, fault catalogue, MQTT wrapper
 ├── database/        SQLite schema, incidents, chart aggregates, CSV export
 ├── emulators/       eight sensors, three relays, shared panel base, device panel
 ├── data_manager/    rules, control loop, incidents, device health, persistence
@@ -507,8 +538,10 @@ ColdChainMonitor/
 │                    console renders identically on every platform
 ├── docs/            screenshots
 ├── run/
-│   ├── macos/       start_all.command, start_panel.command
-│   └── windows/     start_all.bat, start_panel.bat
+│   ├── macos/       start_all.command, start_panel.command, _launch.sh
+│   └── windows/     start_all.bat, start_panel.bat, _launch.bat
+├── .gitattributes   pins .bat to CRLF and the shell scripts to LF, so both
+│                    survive a clone on either platform
 ├── README.md        this file
 ├── RUNNING.md       installation, running, demo script, troubleshooting
 └── requirements.txt
@@ -518,7 +551,12 @@ ColdChainMonitor/
 
 ## Configuration
 
-Everything tunable is in `config/mqtt_init.py`:
+`config/mqtt_init.py` is where every threshold is declared, and its literal is
+the recommended default. Most of them can also be changed at runtime from the
+console's Settings page, which persists the overrides to `config/thresholds.json`
+and publishes them to every process - see [Settings](#settings) above. Editing
+the module is the way to change what the system *ships* with; the Settings page
+is the way to change what one installation is currently *running*.
 
 | Setting | Meaning |
 |---|---|
